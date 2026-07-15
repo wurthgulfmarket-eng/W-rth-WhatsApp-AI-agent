@@ -86,6 +86,17 @@ def rebuild_kb(token: str, background_tasks: BackgroundTasks):
     return {"status": "rebuild_started"}
 
 
+@app.on_event("startup")
+def _auto_rebuild_kb_if_missing():
+    # Render's free tier disk is ephemeral - every deploy/restart wipes data/,
+    # so the knowledge base index needs rebuilding after every deploy. Do it
+    # automatically instead of relying on a manual /admin/rebuild-kb call.
+    if not os.path.exists(config.KB_INDEX_PATH):
+        logger.info("kb_index.pkl not found on startup - auto-rebuilding knowledge base")
+        import threading
+        threading.Thread(target=_rebuild_kb, daemon=True).start()
+
+
 # ---- Meta webhook verification (GET) ----
 @app.get("/webhook")
 def verify_webhook(request: Request):
