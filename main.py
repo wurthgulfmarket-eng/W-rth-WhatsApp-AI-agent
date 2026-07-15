@@ -10,9 +10,11 @@ import logging
 import os
 
 from fastapi import BackgroundTasks, FastAPI, Request, Response
+from fastapi.responses import HTMLResponse
 
 from config import config
 from ai.agent import generate_reply, needs_escalation, try_extract_company_name
+from privacy_policy import PRIVACY_POLICY_HTML
 from sheets.sheets_client import find_rep_for_company
 from storage import store
 from whatsapp.client import send_text_message, mark_as_read, WhatsAppError
@@ -35,6 +37,11 @@ app = FastAPI(title="Wurth UAE WhatsApp AI Agent")
 @app.get("/")
 def health():
     return {"status": "ok", "service": "wurth-whatsapp-agent"}
+
+
+@app.get("/privacy-policy", response_class=HTMLResponse)
+def privacy_policy():
+    return PRIVACY_POLICY_HTML
 
 
 def _rebuild_kb():
