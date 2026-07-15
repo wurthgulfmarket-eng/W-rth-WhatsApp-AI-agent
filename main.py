@@ -6,6 +6,7 @@ Expose this publicly (e.g. via a reverse proxy or a tunnel like ngrok during
 development) and set the resulting URL as your webhook in Meta's App Dashboard
 under WhatsApp > Configuration, together with WHATSAPP_VERIFY_TOKEN from .env.
 """
+import json
 import logging
 import os
 
@@ -24,12 +25,29 @@ logger = logging.getLogger("wurth-agent")
 
 # On hosts without file upload (e.g. Render free tier), the service account
 # key is supplied as a raw JSON string in GOOGLE_SERVICE_ACCOUNT_JSON - write
-# it to disk once at startup so sheets_client can read it as a normal file.
-if config.GOOGLE_SERVICE_ACCOUNT_JSON and not os.path.exists(config.GOOGLE_SERVICE_ACCOUNT_FILE):
-    os.makedirs(os.path.dirname(config.GOOGLE_SERVICE_ACCOUNT_FILE), exist_ok=True)
-    with open(config.GOOGLE_SERVICE_ACCOUNT_FILE, "w", encoding="utf-8") as f:
-        f.write(config.GOOGLE_SERVICE_ACCOUNT_JSON)
-    logger.info("Wrote service account credentials from GOOGLE_SERVICE_ACCOUNT_JSON to %s", config.GOOGLE_SERVICE_ACCOUNT_FILE)
+# it to disk at every startup so sheets_client can read it as a normal file.
+# Always overwrite (rather than skip-if-exists) so a stale/empty file from a
+# previous run never shadows a valid env var.
+if config.GOOGLE_SERVICE_ACCOUNT_JSON:
+    try:
+        json.loads(config.GOOGLE_SERVICE_ACCOUNT_JSON)  # validate before writing
+    except ValueError:
+        logger.error(
+            "GOOGLE_SERVICE_ACCOUNT_JSON is set but is not valid JSON - "
+            "Google Sheets lookups will fail until this is fixed. "
+            "Paste the full contents of your service_account.json file."
+        )
+    else:
+        os.makedirs(os.path.dirname(config.GOOGLE_SERVICE_ACCOUNT_FILE), exist_ok=True)
+        with open(config.GOOGLE_SERVICE_ACCOUNT_FILE, "w", encoding="utf-8") as f:
+            f.write(config.GOOGLE_SERVICE_ACCOUNT_JSON)
+        logger.info("Wrote service account credentials from GOOGLE_SERVICE_ACCOUNT_JSON to %s", config.GOOGLE_SERVICE_ACCOUNT_FILE)
+elif not os.path.exists(config.GOOGLE_SERVICE_ACCOUNT_FILE):
+    logger.warning(
+        "No GOOGLE_SERVICE_ACCOUNT_JSON env var and no %s file found - "
+        "Google Sheets rep lookups will fail until credentials are configured.",
+        config.GOOGLE_SERVICE_ACCOUNT_FILE,
+    )
 
 app = FastAPI(title="Wurth UAE WhatsApp AI Agent")
 
@@ -147,7 +165,14 @@ def handle_customer_message(phone: str, text: str):
     # First contact / no company on file yet -> try to resolve it from the sheet
     if not customer or not customer.get("company_name"):
         candidate = try_extract_company_name(text)
-        rep = find_rep_for_company(candidate) if candidate else None
+        rep = None
+        if candidate:
+            try:
+                rep = find_rep_for_company(candidate)
+            except Exception:
+                # Sheets lookup can fail (bad credentials, API outage, etc.) - don't let
+                # that stop the customer from getting an answer, just skip the rep lookup.
+                logger.exception("Sales rep lookup failed for candidate company '%s'", candidate)
 
         if rep:
             store.upsert_customer(phone, rep["company_name"], rep["rep_name"], rep["rep_phone"], rep["rep_email"])
