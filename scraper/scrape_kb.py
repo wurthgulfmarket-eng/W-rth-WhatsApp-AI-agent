@@ -146,16 +146,39 @@ def crawl():
     return kb_entries
 
 
+def load_seed_entries():
+    """
+    Hand-written baseline knowledge (data/knowledge_base_seed.json, committed
+    to the repo) so the bot has something to answer from even if the live
+    crawl is blocked (wurth.ae/eshop.wurth.ae return 403 to non-browser
+    clients as of this writing) or returns nothing.
+    """
+    import os
+    seed_path = os.path.join(config.DATA_DIR, "knowledge_base_seed.json")
+    if not os.path.exists(seed_path):
+        return []
+    with open(seed_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def main():
     print("Starting crawl of wurth.ae and eshop.wurth.ae ...")
-    entries = crawl()
-    print(f"Collected {len(entries)} knowledge base chunks from {len({e['source_url'] for e in entries})} pages")
+    crawled = crawl()
+    print(f"Collected {len(crawled)} knowledge base chunks from {len({e['source_url'] for e in crawled})} pages")
+
+    seed = load_seed_entries()
+    if seed:
+        print(f"Adding {len(seed)} seed knowledge base chunks")
+
+    entries = seed + crawled
+    if not entries:
+        print("WARNING: no seed and no crawled content - knowledge base will be empty.")
 
     import os
     os.makedirs(config.DATA_DIR, exist_ok=True)
     with open(config.KB_JSON_PATH, "w", encoding="utf-8") as f:
         json.dump(entries, f, ensure_ascii=False, indent=2)
-    print(f"Saved knowledge base to {config.KB_JSON_PATH}")
+    print(f"Saved knowledge base ({len(entries)} total chunks) to {config.KB_JSON_PATH}")
     print("Next step: python -m kb.build_index")
 
 

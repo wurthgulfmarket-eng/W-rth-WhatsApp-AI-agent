@@ -1,6 +1,8 @@
 .env
 credentials/*.json
 data/*.json
+!data/knowledge_base_seed.json
+!data/sample_sheet_template.csv
 data/*.pkl
 data/*.db
 __pycache__/
