@@ -46,7 +46,12 @@ MIN_CHUNK_CHARS = 200    # skip near-empty chunks
 MAX_CHUNK_CHARS = 1200   # split long pages into chunks of roughly this size
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; WurthKBBot/1.0; +https://www.wurth.ae/)"
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
 SKIP_PATH_PATTERNS = re.compile(
