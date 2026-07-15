@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: wurth-whatsapp-agent
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt && python -m scraper.scrape_kb && python -m kb.build_index"
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_BUSINESS_ACCOUNT_ID
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_API_VERSION
+        value: v20.0
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: nvidia/nemotron-3-ultra-550b-a55b:free
+      - key: GOOGLE_SHEET_ID
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_FILE
+        value: ./credentials/service_account.json
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: GOOGLE_SHEET_WORKSHEET_NAME
+        value: Sheet1
+      - key: FUZZY_MATCH_THRESHOLD
+        value: "75"
+      - key: ESCALATION_NOTIFY_NUMBERS
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.11.9
+    disk:
+      name: wurth-agent-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
