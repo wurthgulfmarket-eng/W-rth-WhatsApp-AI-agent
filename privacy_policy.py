@@ -1,8 +1,6 @@
 """
 Serves the Privacy Policy page required by Meta for WhatsApp Business API
-app review/verification. Edit PRIVACY_POLICY_HTML below to fill in the
-placeholders marked [IN BRACKETS] with your company's real details before
-submitting the URL to Meta.
+app review/verification.
 """
 
 PRIVACY_POLICY_HTML = """<!DOCTYPE html>
@@ -22,10 +20,10 @@ PRIVACY_POLICY_HTML = """<!DOCTYPE html>
 <body>
 
 <h1>Privacy Policy - Würth UAE WhatsApp Assistant</h1>
-<p class="updated">Last updated: [DATE]</p>
+<p class="updated">Last updated: 15 July 2026</p>
 
 <p>
-This Privacy Policy explains how <strong>[LEGAL COMPANY NAME, e.g. Würth Gulf FZE]</strong>
+This Privacy Policy explains how <strong>Würth Gulf FZE</strong>
 ("we", "us", "our") collects, uses, and protects information when you interact with our
 WhatsApp Business messaging assistant ("the Service").
 </p>
@@ -92,10 +90,11 @@ blocking the WhatsApp Business number, or contacting us using the details below.
 <h2>7. Contact us</h2>
 <p>
 For any privacy-related questions, data access, or deletion requests, contact:<br>
-<strong>[LEGAL COMPANY NAME]</strong><br>
-Email: [PRIVACY CONTACT EMAIL, e.g. privacy@wurth.ae]<br>
-Address: [REGISTERED BUSINESS ADDRESS, UAE]<br>
-Phone: [BUSINESS PHONE NUMBER]
+<strong>Würth Gulf FZE</strong><br>
+Email: <a href="mailto:eshop@wurth.ae">eshop@wurth.ae</a> or
+<a href="mailto:CustomerHappinessCenter@wurth.ae">CustomerHappinessCenter@wurth.ae</a><br>
+Address: P.O. Box 17036, Jebel Ali Free Zone, South 6, Dubai, U.A.E.<br>
+Phone: +971 800 98784
 </p>
 
 <h2>8. Changes to this policy</h2>
