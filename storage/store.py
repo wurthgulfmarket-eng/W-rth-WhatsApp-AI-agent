@@ -40,7 +40,29 @@ def _init_schema(conn):
         escalated INTEGER DEFAULT 0,
         created_at TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS processed_messages (
+        message_id TEXT PRIMARY KEY,
+        processed_at TEXT
+    );
     """)
+    conn.commit()
+
+
+def already_processed(message_id: str) -> bool:
+    """Meta retries webhook delivery if it doesn't get a fast 200 response,
+    which can redeliver the same message_id. Use this to avoid double-replying."""
+    conn = _get_conn()
+    cur = conn.execute("SELECT 1 FROM processed_messages WHERE message_id = ?", (message_id,))
+    return cur.fetchone() is not None
+
+
+def mark_processed(message_id: str):
+    conn = _get_conn()
+    conn.execute(
+        "INSERT OR IGNORE INTO processed_messages (message_id, processed_at) VALUES (?, ?)",
+        (message_id, datetime.now(timezone.utc).isoformat()),
+    )
     conn.commit()
 
 

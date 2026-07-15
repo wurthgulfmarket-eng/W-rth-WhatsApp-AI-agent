@@ -82,8 +82,13 @@ def verify_webhook(request: Request):
 
 
 # ---- Inbound messages (POST) ----
+# Responds to Meta immediately and does the actual work (OpenRouter call, KB
+# search, Sheets lookup, sending the reply) in a background task. Meta expects
+# a fast response and will retry delivery of the same message if it doesn't
+# get one - retries showed up as duplicate message_ids in the logs before
+# this change, each one re-triggering a slow synchronous reply generation.
 @app.post("/webhook")
-async def receive_webhook(request: Request):
+async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
     payload = await request.json()
     logger.info("Inbound payload: %s", payload)
 
@@ -108,13 +113,25 @@ async def receive_webhook(request: Request):
     if not text:
         return {"status": "ignored_non_text"}
 
+    if store.already_processed(message_id):
+        logger.info("Skipping already-processed message_id=%s (Meta retry)", message_id)
+        return {"status": "duplicate_ignored"}
+    store.mark_processed(message_id)
+
+    background_tasks.add_task(_process_message, from_number, text, message_id)
+    return {"status": "accepted"}
+
+
+def _process_message(phone: str, text: str, message_id: str):
     try:
         mark_as_read(message_id)
     except WhatsAppError as e:
         logger.warning("mark_as_read failed: %s", e)
 
-    handle_customer_message(from_number, text)
-    return {"status": "processed"}
+    try:
+        handle_customer_message(phone, text)
+    except Exception:
+        logger.exception("Failed to handle message from %s", phone)
 
 
 def handle_customer_message(phone: str, text: str):
