@@ -52,11 +52,11 @@ def _load_rows(force: bool = False):
         for r in records:
             normalized = {_normalize_key(k): v for k, v in r.items()}
             rows.append({
-                "company_name": normalized.get("company_name", "").strip(),
-                "rep_name": normalized.get("sales_rep_name", "").strip(),
+                "company_name": str(normalized.get("company_name", "")).strip(),
+                "rep_name": str(normalized.get("sales_rep_name", "")).strip(),
                 "rep_phone": str(normalized.get("rep_phone", "")).strip(),
-                "rep_email": normalized.get("rep_email", "").strip(),
-                "region": normalized.get("region", "").strip(),
+                "rep_email": str(normalized.get("rep_email", "")).strip(),
+                "region": str(normalized.get("region", "")).strip(),
             })
 
         _cache["rows"] = rows
