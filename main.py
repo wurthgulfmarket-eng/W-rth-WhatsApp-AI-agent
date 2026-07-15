@@ -132,6 +132,11 @@ def _process_message(phone: str, text: str, message_id: str):
         handle_customer_message(phone, text)
     except Exception:
         logger.exception("Failed to handle message from %s", phone)
+        _send(
+            phone,
+            "Sorry, I'm having trouble responding right now. Please try again in a moment, "
+            "or contact Würth UAE customer service at +971 800 98784.",
+        )
 
 
 def handle_customer_message(phone: str, text: str):

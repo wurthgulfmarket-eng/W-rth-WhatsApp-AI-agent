@@ -36,7 +36,14 @@ def chat_completion(messages, temperature: float = 0.3, max_tokens: int = 600) -
     if resp.status_code != 200:
         raise OpenRouterError(f"OpenRouter error {resp.status_code}: {resp.text}")
 
-    data = resp.json()
+    if not resp.text.strip():
+        raise OpenRouterError("OpenRouter returned an empty response body (model may be overloaded/unavailable)")
+
+    try:
+        data = resp.json()
+    except ValueError as e:
+        raise OpenRouterError(f"OpenRouter returned non-JSON response: {resp.text[:500]}") from e
+
     try:
         return data["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError) as e:
