@@ -2,17 +2,37 @@
   {
     "source_url": "https://www.wurth.ae/",
     "title": "About Würth UAE",
-    "text": "Würth is a global market leader in the development, manufacturing, and distribution of assembly and fastening materials, including screws, bolts, anchors, chemical products, tools, and installation material. The Würth Group operates in more than 80 countries with a large direct sales force. Würth Gulf FZE / Würth UAE serves customers across the United Arab Emirates in industries such as automotive, construction, metal and manufacturing, wood, MRO (maintenance, repair, and operations), and electrical trades."
+    "text": "Würth is a global market leader in the development, manufacturing, and distribution of assembly and fastening materials, including screws, bolts, anchors, chemical products, tools, and installation material. The Würth Group operates in more than 80 countries with a large direct sales force. Würth Gulf FZE / Würth UAE serves customers across the United Arab Emirates in industries such as automotive, construction, metal and manufacturing, wood, MRO (maintenance, repair, and operations), and electrical trades. Würth Gulf FZE is registered at P.O. Box 17036, Jebel Ali Free Zone, South 6, Dubai, U.A.E."
   },
   {
     "source_url": "https://www.wurth.ae/",
-    "title": "Würth product range",
-    "text": "Würth's product range includes fasteners (screws, bolts, nuts, washers, anchors, rivets), chemical and adhesive products (sealants, lubricants, cleaners, threadlockers, sprays), hand tools and power tools, personal protective equipment (PPE) and workwear, storage and warehouse systems (shelving, bins, cabinets), automotive workshop equipment and consumables, and electrical installation material such as cable ties, connectors, and wiring accessories."
+    "title": "Würth product range - fasteners",
+    "text": "Würth's fastener range includes screws (wood, metal, self-drilling, self-tapping), bolts, nuts, washers, threaded rods, chemical and mechanical anchors, rivets, dowels, and specialty fixings for construction, automotive, and industrial assembly applications."
+  },
+  {
+    "source_url": "https://www.wurth.ae/",
+    "title": "Würth product range - chemicals and adhesives",
+    "text": "Würth's chemical product range includes threadlockers and thread sealants, industrial adhesives and sealants, lubricants and greases, degreasers and industrial cleaners, rust converters and corrosion protection sprays, silicone and PU sealants, and maintenance sprays for workshops and production lines."
+  },
+  {
+    "source_url": "https://www.wurth.ae/",
+    "title": "Würth product range - tools and equipment",
+    "text": "Würth supplies hand tools (wrenches, pliers, screwdrivers, sockets), power tools (drills, grinders, impact drivers), pneumatic tools, automotive workshop and diagnostic equipment, welding consumables, cutting and grinding discs, and measuring instruments."
+  },
+  {
+    "source_url": "https://www.wurth.ae/",
+    "title": "Würth product range - PPE, workwear and storage",
+    "text": "Würth offers personal protective equipment (PPE) such as safety gloves, eyewear, and footwear, branded workwear, and storage/warehouse systems including shelving, small-parts bins, and mobile storage units for organizing tools and consumables on-site."
+  },
+  {
+    "source_url": "https://www.wurth.ae/",
+    "title": "Würth product range - electrical and MEP material",
+    "text": "Würth's electrical range includes cable ties, cable glands and connectors, terminal blocks, wiring accessories, junction boxes, and other consumables used by electrical and MEP (mechanical, electrical, plumbing) contractors."
   },
   {
     "source_url": "https://www.wurth.ae/",
     "title": "Industries Würth UAE serves",
-    "text": "Würth UAE supplies businesses across multiple sectors: automotive repair and service workshops, construction and building contractors, metal fabrication and manufacturing companies, woodworking and furniture manufacturers, MRO (maintenance, repair and operations) for industrial facilities, and electrical and MEP (mechanical, electrical, plumbing) contractors. Products and service levels are tailored to each industry's typical needs."
+    "text": "Würth UAE supplies businesses across multiple sectors: automotive repair and service workshops, construction and building contractors, metal fabrication and manufacturing companies, woodworking and furniture manufacturers, MRO (maintenance, repair and operations) for industrial facilities, and electrical and MEP contractors. Products and service levels are tailored to each industry's typical needs."
   },
   {
     "source_url": "https://eshop.wurth.ae/",
@@ -22,12 +42,17 @@
   {
     "source_url": "https://www.wurth.ae/",
     "title": "Würth sales representative model",
-    "text": "Würth's business model is built around direct, in-person sales representatives (\"Verkaufsberater\") who are assigned to specific customer companies and regions. Each business customer typically has one dedicated sales representative who visits regularly, understands the customer's stock and ordering needs, and is the main point of contact for quotes, pricing, order status, product recommendations, and account issues. For pricing, quotations, and order-specific questions, customers should be directed to their assigned sales representative."
+    "text": "Würth's business model is built around direct, in-person sales representatives who are assigned to specific customer companies and regions. Each business customer typically has one dedicated sales representative who visits regularly, understands the customer's stock and ordering needs, and is the main point of contact for quotes, pricing, order status, product recommendations, and account issues. For pricing, quotations, and order-specific questions, customers should be directed to their assigned sales representative."
   },
   {
     "source_url": "https://www.wurth.ae/",
     "title": "Würth ORSY storage and organization systems",
     "text": "Würth offers the ORSY system, a modular storage, labeling, and inventory organization solution for workshops and warehouses. It is used to keep fasteners, tools, and small parts organized on-site, and can be integrated with Würth's replenishment and reordering services so that assigned sales representatives restock items automatically based on usage."
+  },
+  {
+    "source_url": "https://www.wurth.ae/",
+    "title": "Würth WOW! (Würth Order World) ordering system",
+    "text": "Würth Group companies commonly offer an electronic ordering and inventory management system for workshops (branded WOW! - Würth Order World in many markets), letting customers scan or select items to reorder consumables and small parts quickly, often tied to their assigned sales representative's replenishment visits. Customers should confirm exact availability of this program with their local sales representative."
   },
   {
     "source_url": "https://www.wurth.ae/",
@@ -37,6 +62,11 @@
   {
     "source_url": "https://www.wurth.ae/",
     "title": "Contacting Würth UAE",
-    "text": "For general inquiries, new account setup, or if a customer does not yet have an assigned sales representative, they can be directed to contact Würth UAE's main customer service channel. Existing customers with an assigned sales representative should reach out to that representative directly for the fastest response on pricing, orders, and product availability."
+    "text": "Würth Gulf FZE's UAE customer service can be reached by phone at +971 800 98784, or by email at eshop@wurth.ae (for online shop / ordering questions) or CustomerHappinessCenter@wurth.ae (for general customer service). Registered business address: P.O. Box 17036, Jebel Ali Free Zone, South 6, Dubai, U.A.E. Existing customers with an assigned sales representative should reach out to that representative directly for the fastest response on pricing, orders, and product availability. New customers or those without an assigned representative yet should contact customer service to be connected."
+  },
+  {
+    "source_url": "https://www.wurth.ae/",
+    "title": "Getting a quote or placing an order",
+    "text": "To get a price quote, request a formal quotation, or place a bulk/contract order, customers should contact their assigned Würth sales representative directly - the sales representative has visibility into contract pricing, stock, and delivery timelines specific to that customer's account. If a customer does not know their sales representative yet, provide the company name so it can be looked up, or direct them to Würth UAE customer service at +971 800 98784 / CustomerHappinessCenter@wurth.ae."
   }
 ]
