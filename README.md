@@ -112,24 +112,36 @@ This repo includes `render.yaml` so Render can deploy it automatically.
      `credentials/service_account.json` file as the value of this one env
      var. The app writes it to disk automatically on startup (see `main.py`).
    - `ESCALATION_NOTIFY_NUMBERS` (optional)
-4. Click **Apply**. Render will run the build command from `render.yaml`:
-   `pip install -r requirements.txt && python -m scraper.scrape_kb && python -m kb.build_index`
-   — this crawls wurth.ae/eshop.wurth.ae and builds the search index
-   automatically during deploy, so you don't need to run it locally.
+4. Click **Apply**. Render will run the build command from `render.yaml`
+   (`pip install -r requirements.txt`) and start the server. The knowledge
+   base crawl is **not** part of the build (a live crawl of wurth.ae during
+   the build step is fragile and can fail the whole deploy) — instead you
+   trigger it once the service is live, see step 6 below.
 5. Once deployed, Render gives you a public URL like
    `https://wurth-whatsapp-agent.onrender.com`. That's your webhook base URL.
+6. Build the knowledge base by calling the admin endpoint once the service is
+   up (replace `<url>` and `<verify-token>`):
+
+   ```bash
+   curl -X POST "https://<url>/admin/rebuild-kb?token=<verify-token>"
+   ```
+
+   This runs the crawl + index build in the background (takes a few minutes
+   for ~300 pages); watch Render's **Logs** tab for progress
+   ("Knowledge base rebuild complete."). Until this finishes, the bot will
+   reply that it can't find an answer yet for product-specific questions —
+   general conversation still works. Re-run this endpoint periodically (e.g.
+   monthly) to keep product info current.
 
 **Free tier note:** the free web service sleeps after 15 minutes of no
 traffic. The first WhatsApp message after a period of inactivity may take
 ~30-50 seconds to get a reply while the instance wakes up; after that it's
-fast until it goes idle again. This is fine for testing/low volume; if you
-need always-on, upgrade that one service to Render's cheapest paid plan later
-(no other changes needed).
-
-**Updating the knowledge base after launch:** re-run the Render deploy
-(Manual Deploy > Deploy latest commit, or just push a commit) to re-crawl and
-rebuild the index — do this periodically, e.g. monthly, to keep product info
-current.
+fast until it goes idle again. Also, the free tier's filesystem is ephemeral —
+every deploy or restart wipes `data/`, so re-run the `/admin/rebuild-kb` call
+after every deploy, and know that SQLite conversation history resets on
+restarts. This is fine for testing/low volume; if you need always-on and
+persistent data, upgrade to Render's cheapest paid plan and re-add a disk
+(no other app changes needed).
 
 ## 6. Connect the WhatsApp webhook
 

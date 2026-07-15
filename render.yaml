@@ -3,7 +3,7 @@ services:
     name: wurth-whatsapp-agent
     runtime: python
     plan: free
-    buildCommand: "pip install -r requirements.txt && python -m scraper.scrape_kb && python -m kb.build_index"
+    buildCommand: "pip install -r requirements.txt"
     startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: WHATSAPP_ACCESS_TOKEN

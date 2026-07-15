@@ -9,7 +9,7 @@ under WhatsApp > Configuration, together with WHATSAPP_VERIFY_TOKEN from .env.
 import logging
 import os
 
-from fastapi import FastAPI, Request, Response
+from fastapi import BackgroundTasks, FastAPI, Request, Response
 
 from config import config
 from ai.agent import generate_reply, needs_escalation, try_extract_company_name
@@ -35,6 +35,30 @@ app = FastAPI(title="Wurth UAE WhatsApp AI Agent")
 @app.get("/")
 def health():
     return {"status": "ok", "service": "wurth-whatsapp-agent"}
+
+
+def _rebuild_kb():
+    logger.info("Starting knowledge base rebuild...")
+    try:
+        from scraper.scrape_kb import main as scrape_main
+        from kb.build_index import main as build_index_main
+        scrape_main()
+        build_index_main()
+        logger.info("Knowledge base rebuild complete.")
+    except Exception:
+        logger.exception("Knowledge base rebuild failed")
+
+
+# Trigger a crawl + reindex of wurth.ae/eshop.wurth.ae. Runs in the background
+# so the request returns immediately; check the service logs for progress.
+# Protected by the same verify token you set in Meta's webhook config, passed
+# as ?token=...
+@app.post("/admin/rebuild-kb")
+def rebuild_kb(token: str, background_tasks: BackgroundTasks):
+    if token != config.WHATSAPP_VERIFY_TOKEN:
+        return Response(content="Forbidden", status_code=403)
+    background_tasks.add_task(_rebuild_kb)
+    return {"status": "rebuild_started"}
 
 
 # ---- Meta webhook verification (GET) ----
