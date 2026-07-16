@@ -46,11 +46,6 @@
   },
   {
     "source_url": "https://www.wurth.ae/",
-    "title": "Würth ORSY storage and organization systems",
-    "text": "Würth offers the ORSY system, a modular storage, labeling, and inventory organization solution for workshops and warehouses. It is used to keep fasteners, tools, and small parts organized on-site, and can be integrated with Würth's replenishment and reordering services so that assigned sales representatives restock items automatically based on usage."
-  },
-  {
-    "source_url": "https://www.wurth.ae/",
     "title": "Würth WOW! (Würth Order World) ordering system",
     "text": "Würth Group companies commonly offer an electronic ordering and inventory management system for workshops (branded WOW! - Würth Order World in many markets), letting customers scan or select items to reorder consumables and small parts quickly, often tied to their assigned sales representative's replenishment visits. Customers should confirm exact availability of this program with their local sales representative."
   },
@@ -72,7 +67,7 @@
   {
     "source_url": "https://eshop.wurth.ae/en/US/AED/",
     "title": "Würth eshop full product category list",
-    "text": "The Würth UAE online shop (eshop.wurth.ae) organizes its full catalog into these main categories: Advertising materials; Agriculture and gardening; Anchors; Automotive parts; Brazing, soldering, and welding; Building supplies; Direct fastening; Electrical installation; Fasteners; Fire protection; Hand tools; Hoses, couplings, and hose clamps; Hydraulic and pneumatic drive components; Machining; Measuring; Metal fittings; ORSY system (storage and organization); Plumbing and HVAC; Power tools; Safety and workwear; Technical chemicals; Technical rubber and engineering plastics; Traffic and construction site safety; Vehicle interior equipment; Work equipment. Customers can browse any of these categories on eshop.wurth.ae or ask their assigned sales representative for product recommendations within a category."
+    "text": "The Würth UAE online shop (eshop.wurth.ae) organizes its full catalog into these main categories: Advertising materials; Agriculture and gardening; Anchors; Automotive parts; Brazing, soldering, and welding; Building supplies; Direct fastening; Electrical installation; Fasteners; Fire protection; Hand tools; Hoses, couplings, and hose clamps; Hydraulic and pneumatic drive components; Machining; Measuring; Metal fittings; Plumbing and HVAC; Power tools; Safety and workwear; Technical chemicals; Technical rubber and engineering plastics; Traffic and construction site safety; Vehicle interior equipment; Work equipment. Customers can browse any of these categories on eshop.wurth.ae or ask their assigned sales representative for product recommendations within a category."
   },
   {
     "source_url": "https://eshop.wurth.ae/en/US/AED/",
@@ -87,7 +82,7 @@
   {
     "source_url": "https://eshop.wurth.ae/en/US/AED/",
     "title": "Würth eshop - tools and safety categories",
-    "text": "Tools and safety-related categories on Würth's eshop include: Hand tools, Power tools, Measuring (measuring instruments), Machining (cutting, grinding, drilling consumables), Safety and workwear (PPE), and the ORSY storage/organization system."
+    "text": "Tools and safety-related categories on Würth's eshop include: Hand tools, Power tools, Measuring (measuring instruments), Machining (cutting, grinding, drilling consumables), and Safety and workwear (PPE)."
   },
   {
     "source_url": "https://eshop.wurth.ae/en/US/AED/",
@@ -103,5 +98,20 @@
     "source_url": "https://eshop.wurth.ae/",
     "title": "Example Würth eshop products - tools and workshop equipment",
     "text": "Examples of specific tools and workshop equipment products available on Würth's eshop include: cordless LED hand-held lamps (e.g. WLH-1.5), equipped workshop trolleys, pneumatic quick-action couplings, low materials cabinets, and modular system cases (e.g. System case 4.4.1) for organizing tools and small parts. This is not an exhaustive list - for current stock and pricing, direct the customer to eshop.wurth.ae or their assigned sales representative."
+  },
+  {
+    "source_url": "https://www.wurth.ae/",
+    "title": "Würth UAE pickup shops and branches",
+    "text": "Würth UAE has walk-in pickup shops and branches across the Emirates where customers can collect orders or buy in person: Würth Shop 1, Sharjah Industrial Area 2 (Sharjah); Würth Shop 2, Ras Al Khaimah, Al Hamra (Ras Al Khaimah); Würth Shop 2, Abu Dhabi, Mussafah M32 (Abu Dhabi); Würth Shop 1, Ajman Industrial Area 2 (Ajman); Würth Shop, Al Ain (Al Ain); Würth Shop 1, Abu Dhabi, Mussafah M14 (Abu Dhabi); Würth Shop, Al Sajaa (Sharjah); Würth Shop, DIP - Dubai Investment Park (Dubai); Würth Shop, Ras Al Khor (Dubai); and Würth Service Center, Ajman, Jurf (Ajman). If a customer asks for their nearest store or pickup location, share the shop(s) in or closest to their Emirate from this list, and suggest they confirm opening hours with customer service (+971 800 98784) before visiting."
+  },
+  {
+    "source_url": "https://www.wurth.ae/uae/Catalogues/Catalogues.php",
+    "title": "Würth UAE product catalogues",
+    "text": "Würth UAE publishes downloadable product catalogues covering its range in detail. Customers looking for a full catalogue (PDF/browsable) to browse products should be directed to: https://www.wurth.ae/uae/Catalogues/Catalogues.php"
+  },
+  {
+    "source_url": "https://l.ead.me/bf1OfX",
+    "title": "Würth UAE mobile app",
+    "text": "Würth UAE offers a mobile app for easy ordering, requesting quotations, reordering previous purchases, and viewing invoices. Customers who order regularly should be encouraged to download the app for a faster experience: https://l.ead.me/bf1OfX"
   }
 ]
