@@ -48,6 +48,29 @@ def mark_as_read(message_id: str) -> dict:
     return resp.json()
 
 
+def get_media_url(media_id: str) -> str:
+    """Step 1 of downloading inbound media (images, voice notes, etc.):
+    resolve a media_id to a short-lived download URL."""
+    resp = requests.get(
+        f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{media_id}",
+        headers=_headers(),
+        timeout=15,
+    )
+    if resp.status_code >= 300:
+        raise WhatsAppError(f"WhatsApp get_media_url failed {resp.status_code}: {resp.text}")
+    return resp.json()["url"]
+
+
+def download_media(media_id: str) -> bytes:
+    """Step 2: download the actual media bytes. Requires the same auth header
+    as the API itself, not just a plain GET."""
+    url = get_media_url(media_id)
+    resp = requests.get(url, headers=_headers(), timeout=30)
+    if resp.status_code >= 300:
+        raise WhatsAppError(f"WhatsApp media download failed {resp.status_code}: {resp.text}")
+    return resp.content
+
+
 def send_template_message(to: str, template_name: str, language_code: str = "en", components: list = None) -> dict:
     """Used for outbound marketing broadcasts (must use a Meta-approved template)."""
     payload = {

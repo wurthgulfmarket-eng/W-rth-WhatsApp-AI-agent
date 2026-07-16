@@ -5,10 +5,29 @@ Orchestrates a single customer turn:
   3. call OpenRouter for a grounded reply
   4. decide if the conversation should be escalated to a human
 """
+import base64
 import re
 
+from config import config
 from ai.openrouter_client import chat_completion
 from kb.retriever import search as kb_search
+
+IMAGE_SYSTEM_PROMPT_TEMPLATE = """You are Würth UAE's WhatsApp assistant. A customer has sent a photo, likely of a \
+product or part they want to buy, identify, or ask about. Look at the image and:
+- Describe what the item appears to be (product type, material, approximate size/shape if visible).
+- If it matches something in the knowledge base context below, mention that product category and suggest next steps.
+- If you cannot confidently identify it, say so honestly and suggest the customer describe it in words or send it to \
+their sales representative for a proper look.
+- Never invent a specific product name, SKU, or price that isn't in the knowledge base context - only describe what \
+you visually observe and suggest general categories.
+- Keep the reply concise (WhatsApp-length, a few short sentences).
+
+Knowledge base context (possibly relevant product categories):
+{kb_context}
+
+Assigned sales representative for this customer:
+{rep_context}
+"""
 
 ESCALATION_KEYWORDS = [
     "quote", "quotation", "price for", "discount", "complaint", "refund",
@@ -76,6 +95,34 @@ def generate_reply(customer_message: str, rep: dict | None, history: list = None
     messages.append({"role": "user", "content": customer_message})
 
     return chat_completion(messages)
+
+
+def generate_image_reply(image_bytes: bytes, mime_type: str, rep: dict | None, caption: str = "") -> str:
+    """Analyzes a customer-sent photo (e.g. of a product/part) using a
+    vision-capable OpenRouter model, grounded in the same knowledge base."""
+    query = caption.strip() or "product photo sent by customer"
+    kb_chunks = kb_search(query, top_k=4)
+
+    system_prompt = IMAGE_SYSTEM_PROMPT_TEMPLATE.format(
+        kb_context=_format_kb_context(kb_chunks),
+        rep_context=_format_rep_context(rep),
+    )
+
+    b64_image = base64.b64encode(image_bytes).decode("ascii")
+    user_content = [
+        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64_image}"}},
+    ]
+    if caption.strip():
+        user_content.append({"type": "text", "text": caption.strip()})
+    else:
+        user_content.append({"type": "text", "text": "What is this and can you help me with it?"})
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+    return chat_completion(messages, model=config.OPENROUTER_VISION_MODEL)
 
 
 def try_extract_company_name(message: str) -> str | None:

@@ -11,7 +11,7 @@ class OpenRouterError(Exception):
     pass
 
 
-def chat_completion(messages, temperature: float = 0.3, max_tokens: int = 600) -> str:
+def chat_completion(messages, temperature: float = 0.3, max_tokens: int = 600, model: str = None) -> str:
     if not config.OPENROUTER_API_KEY:
         raise OpenRouterError("OPENROUTER_API_KEY is not set in .env")
 
@@ -25,7 +25,7 @@ def chat_completion(messages, temperature: float = 0.3, max_tokens: int = 600) -
             "X-Title": "Wurth UAE WhatsApp Agent",
         },
         json={
-            "model": config.OPENROUTER_MODEL,
+            "model": model or config.OPENROUTER_MODEL,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,

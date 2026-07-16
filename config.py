@@ -23,6 +23,9 @@ class Config:
     # OpenRouter
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
     OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it:free")
+    # Used only for image messages - must be a vision/multimodal-capable model.
+    # Defaults to the same model; override if OPENROUTER_MODEL doesn't support images.
+    OPENROUTER_VISION_MODEL = os.getenv("OPENROUTER_VISION_MODEL", OPENROUTER_MODEL)
     OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
     # Google Sheets

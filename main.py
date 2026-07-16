@@ -14,7 +14,7 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import HTMLResponse
 
 from config import config
-from ai.agent import generate_reply, needs_escalation, try_extract_company_name
+from ai.agent import generate_reply, generate_image_reply, needs_escalation, try_extract_company_name
 from privacy_policy import PRIVACY_POLICY_HTML
 from sheets.sheets_client import find_rep_for_company
 from storage import store
@@ -133,25 +133,41 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
         message = value["messages"][0]
         from_number = message["from"]
         message_id = message["id"]
-        text = message.get("text", {}).get("body", "").strip()
+        msg_type = message.get("type", "text")
 
     except (KeyError, IndexError) as e:
         logger.warning("Unrecognized payload shape: %s", e)
         return {"status": "ignored"}
-
-    if not text:
-        return {"status": "ignored_non_text"}
 
     if store.already_processed(message_id):
         logger.info("Skipping already-processed message_id=%s (Meta retry)", message_id)
         return {"status": "duplicate_ignored"}
     store.mark_processed(message_id)
 
-    background_tasks.add_task(_process_message, from_number, text, message_id)
+    if msg_type == "text":
+        text = message.get("text", {}).get("body", "").strip()
+        if not text:
+            return {"status": "ignored_non_text"}
+        background_tasks.add_task(_process_text_message, from_number, text, message_id)
+
+    elif msg_type == "image":
+        image = message.get("image", {})
+        background_tasks.add_task(
+            _process_image_message, from_number, image.get("id"), image.get("mime_type", "image/jpeg"),
+            image.get("caption", ""), message_id,
+        )
+
+    elif msg_type == "audio":
+        background_tasks.add_task(_process_audio_message, from_number, message_id)
+
+    else:
+        logger.info("Ignoring unsupported message type '%s' from %s", msg_type, from_number)
+        return {"status": "ignored_unsupported_type"}
+
     return {"status": "accepted"}
 
 
-def _process_message(phone: str, text: str, message_id: str):
+def _process_text_message(phone: str, text: str, message_id: str):
     try:
         mark_as_read(message_id)
     except WhatsAppError as e:
@@ -165,6 +181,57 @@ def _process_message(phone: str, text: str, message_id: str):
             phone,
             "Sorry, I'm having trouble responding right now. Please try again in a moment, "
             "or contact Würth UAE customer service at +971 800 98784.",
+        )
+
+
+def _process_audio_message(phone: str, message_id: str):
+    try:
+        mark_as_read(message_id)
+    except WhatsAppError as e:
+        logger.warning("mark_as_read failed: %s", e)
+
+    store.log_message(phone, "in", "[voice note]")
+    _send(
+        phone,
+        "Thanks for the voice note! I can't listen to audio yet - could you please type your question, "
+        "or send a photo of the product instead? You can also call us at +971 800 98784.",
+    )
+
+
+def _process_image_message(phone: str, media_id: str, mime_type: str, caption: str, message_id: str):
+    try:
+        mark_as_read(message_id)
+    except WhatsAppError as e:
+        logger.warning("mark_as_read failed: %s", e)
+
+    store.log_message(phone, "in", f"[image]{(' ' + caption) if caption else ''}")
+
+    if not media_id:
+        _send(phone, "Sorry, I couldn't receive that image. Could you try sending it again?")
+        return
+
+    try:
+        from whatsapp.client import download_media
+        image_bytes = download_media(media_id)
+
+        customer = store.get_customer(phone)
+        rep = None
+        if customer and customer.get("rep_name"):
+            rep = {
+                "company_name": customer["company_name"],
+                "rep_name": customer["rep_name"],
+                "rep_phone": customer["rep_phone"],
+                "rep_email": customer["rep_email"],
+            }
+
+        reply = generate_image_reply(image_bytes, mime_type, rep, caption=caption)
+        _send(phone, reply)
+    except Exception:
+        logger.exception("Failed to handle image from %s", phone)
+        _send(
+            phone,
+            "Sorry, I'm having trouble looking at that image right now. Could you describe the product in words, "
+            "or contact Würth UAE customer service at +971 800 98784?",
         )
 
 
