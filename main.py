@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse
 
 from config import config
 from ai.agent import generate_reply, generate_image_reply, needs_escalation, try_extract_company_name
+from dashboard import router as dashboard_router
 from privacy_policy import PRIVACY_POLICY_HTML
 from sheets.sheets_client import find_rep_for_company
 from storage import store
@@ -50,6 +51,7 @@ elif not os.path.exists(config.GOOGLE_SERVICE_ACCOUNT_FILE):
     )
 
 app = FastAPI(title="Wurth UAE WhatsApp AI Agent")
+app.include_router(dashboard_router)
 
 
 @app.get("/")
