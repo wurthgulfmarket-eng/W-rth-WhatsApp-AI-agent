@@ -14,7 +14,7 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import HTMLResponse
 
 from config import config
-from ai.agent import generate_reply, generate_image_reply, needs_escalation, try_extract_company_name
+from ai.agent import generate_reply, generate_image_reply, try_extract_company_name
 from dashboard import router as dashboard_router
 from privacy_policy import PRIVACY_POLICY_HTML
 from sheets.sheets_client import find_rep_for_company, find_rep_for_phone
@@ -291,9 +291,8 @@ def handle_customer_message(phone: str, text: str):
         }
 
     history = store.get_recent_history(phone, limit=6)
-    reply = generate_reply(text, rep, history=history)
+    reply, escalate = generate_reply(text, rep, history=history)
 
-    escalate = needs_escalation(text)
     if escalate:
         reply += "\n\nI've flagged this for your sales representative to follow up personally."
         _notify_escalation(phone, text, customer)

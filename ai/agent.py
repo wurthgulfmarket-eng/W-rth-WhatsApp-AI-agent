@@ -38,6 +38,13 @@ ESCALATION_KEYWORDS = [
     "in stock", "bulk order", "how much for", "can i get a price",
 ]
 
+# The model appends one of these tags at the very end of its reply so we can
+# reliably detect lead intent - keyword matching alone missed cases like
+# "do u have industrial racks" (real product interest, no matching keyword).
+# Parsed and stripped before the reply is ever sent to the customer.
+LEAD_TAG = "[[LEAD]]"
+NO_LEAD_TAG = "[[NO_LEAD]]"
+
 SYSTEM_PROMPT_TEMPLATE = """You are a real member of the Würth UAE team chatting with a customer on WhatsApp - not \
 a generic chatbot. Talk like a helpful, knowledgeable colleague would: warm, natural, a little conversational \
 (contractions are fine, occasional emoji if it fits the tone), genuinely trying to help them get what they need \
@@ -74,6 +81,15 @@ context based on their Emirate/area if mentioned, or ask which Emirate they're i
 - Keep replies WhatsApp-length - a few short, natural sentences, not a long essay - unless the question genuinely \
 needs more detail.
 
+**Lead tagging (required on every reply):** after writing your reply, end it with exactly one tag on its own new \
+line: {lead_tag} if this message shows the customer is interested in a specific product/service and might be ready \
+to order, get a quote, or needs a rep's help soon (e.g. asking if you carry/have/stock something, asking about \
+pricing or availability, wanting to buy, having an issue that needs human follow-up) - or {no_lead_tag} for general \
+chat, greetings, browsing questions with no clear intent yet, or anything already fully resolved (e.g. a simple \
+"okay"/"thanks" with nothing new being asked). When in doubt about genuine product/service interest, prefer \
+{lead_tag} - the cost of missing a real lead is worse than one extra notification to the rep. This tag is stripped \
+before the customer sees your message, so it does not need to read naturally - just place it on its own final line.
+
 Knowledge base context:
 {kb_context}
 
@@ -103,16 +119,39 @@ def _format_rep_context(rep: dict | None) -> str:
 
 
 def needs_escalation(message: str) -> bool:
+    """Cheap keyword backstop - the primary signal is the model's own
+    LEAD_TAG/NO_LEAD_TAG decision (see generate_reply), which catches
+    paraphrases and product-interest questions this can't (e.g. "do u have
+    industrial racks" - no keyword match, but clearly a lead). This still
+    runs and is OR'd with the model's tag, in case the model omits the tag
+    or the response gets truncated."""
     lowered = message.lower()
     return any(keyword in lowered for keyword in ESCALATION_KEYWORDS)
 
 
-def generate_reply(customer_message: str, rep: dict | None, history: list = None) -> str:
+def _strip_lead_tag(reply: str) -> tuple[str, bool | None]:
+    """Parses and removes the trailing [[LEAD]]/[[NO_LEAD]] tag.
+    Returns (cleaned_reply, is_lead) - is_lead is None if the model omitted
+    the tag entirely, so the caller can fall back to the keyword check."""
+    text = reply.strip()
+    if text.endswith(LEAD_TAG):
+        return text[: -len(LEAD_TAG)].strip(), True
+    if text.endswith(NO_LEAD_TAG):
+        return text[: -len(NO_LEAD_TAG)].strip(), False
+    return text, None
+
+
+def generate_reply(customer_message: str, rep: dict | None, history: list = None) -> tuple[str, bool]:
+    """Returns (reply_text, is_lead). is_lead combines the model's own
+    LEAD_TAG decision with the ESCALATION_KEYWORDS backstop, so a lead is
+    flagged if either signals one."""
     kb_chunks = kb_search(customer_message, top_k=4)
 
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
         kb_context=_format_kb_context(kb_chunks),
         rep_context=_format_rep_context(rep),
+        lead_tag=LEAD_TAG,
+        no_lead_tag=NO_LEAD_TAG,
     )
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -121,7 +160,11 @@ def generate_reply(customer_message: str, rep: dict | None, history: list = None
         messages.append({"role": role, "content": text})
     messages.append({"role": "user", "content": customer_message})
 
-    return chat_completion(messages)
+    raw_reply = chat_completion(messages)
+    reply, model_says_lead = _strip_lead_tag(raw_reply)
+
+    is_lead = bool(model_says_lead) or needs_escalation(customer_message)
+    return reply, is_lead
 
 
 def generate_image_reply(image_bytes: bytes, mime_type: str, rep: dict | None, caption: str = "") -> str:
