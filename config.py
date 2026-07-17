@@ -42,6 +42,15 @@ class Config:
     ESCALATION_NOTIFY_NUMBERS = _split_csv(os.getenv("ESCALATION_NOTIFY_NUMBERS", ""))
     PORT = int(os.getenv("PORT", "8000"))
 
+    # Database - Postgres is required for persistence, since Render's free
+    # tier web service filesystem is ephemeral and wipes SQLite on every
+    # deploy/restart. Use Render's own managed Postgres (New > PostgreSQL in
+    # Render's dashboard) and paste its Internal Database URL here - it stays
+    # within Render's network so it avoids the cross-provider IPv6/pooler
+    # issues an external provider can hit. Special characters in the password
+    # do NOT need to be pre-encoded, storage/store.py handles that.
+    DATABASE_URL = os.getenv("DATABASE_URL", "")
+
     # Dashboard admin login (separate from the WHATSAPP_VERIFY_TOKEN used for
     # webhook/rebuild-kb auth). Set these to enable the /dashboard login form.
     DASHBOARD_ADMIN_USERNAME = os.getenv("DASHBOARD_ADMIN_USERNAME", "")
@@ -57,7 +66,6 @@ class Config:
     DATA_DIR = os.path.join(BASE_DIR, "data")
     KB_JSON_PATH = os.path.join(DATA_DIR, "knowledge_base.json")
     KB_INDEX_PATH = os.path.join(DATA_DIR, "kb_index.pkl")
-    DB_PATH = os.path.join(DATA_DIR, "app.db")
 
 
 config = Config()
