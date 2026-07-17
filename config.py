@@ -42,12 +42,29 @@ class Config:
     ESCALATION_NOTIFY_NUMBERS = _split_csv(os.getenv("ESCALATION_NOTIFY_NUMBERS", ""))
     PORT = int(os.getenv("PORT", "8000"))
 
+    # Database - Postgres (e.g. Supabase) is required for persistence, since
+    # Render's free tier filesystem is ephemeral and wipes SQLite on every
+    # deploy/restart. Paste the full connection string from your provider,
+    # e.g. postgresql://user:password@host:5432/dbname - special characters
+    # in the password do NOT need to be pre-encoded, storage/store.py handles
+    # that automatically.
+    DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+    # Dashboard admin login (separate from the WHATSAPP_VERIFY_TOKEN used for
+    # webhook/rebuild-kb auth). Set these to enable the /dashboard login form.
+    DASHBOARD_ADMIN_USERNAME = os.getenv("DASHBOARD_ADMIN_USERNAME", "")
+    DASHBOARD_ADMIN_PASSWORD = os.getenv("DASHBOARD_ADMIN_PASSWORD", "")
+    # Random secret used to sign the admin session cookie - set this to any
+    # long random string in production so sessions survive restarts and can't
+    # be forged. Falls back to WHATSAPP_VERIFY_TOKEN if unset (not ideal, but
+    # keeps things working without yet another required env var).
+    DASHBOARD_SESSION_SECRET = os.getenv("DASHBOARD_SESSION_SECRET", "") or WHATSAPP_VERIFY_TOKEN
+
     # Paths
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     DATA_DIR = os.path.join(BASE_DIR, "data")
     KB_JSON_PATH = os.path.join(DATA_DIR, "knowledge_base.json")
     KB_INDEX_PATH = os.path.join(DATA_DIR, "kb_index.pkl")
-    DB_PATH = os.path.join(DATA_DIR, "app.db")
 
 
 config = Config()
