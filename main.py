@@ -17,7 +17,7 @@ from config import config
 from ai.agent import generate_reply, generate_image_reply, needs_escalation, try_extract_company_name
 from dashboard import router as dashboard_router
 from privacy_policy import PRIVACY_POLICY_HTML
-from sheets.sheets_client import find_rep_for_company
+from sheets.sheets_client import find_rep_for_company, find_rep_for_phone
 from storage import store
 from whatsapp.client import send_text_message, mark_as_read, WhatsAppError
 
@@ -242,17 +242,28 @@ def handle_customer_message(phone: str, text: str):
 
     customer = store.get_customer(phone)
 
-    # First contact / no company on file yet -> try to resolve it from the sheet
+    # First contact / no company on file yet -> try to recognize them
     if not customer or not customer.get("company_name"):
-        candidate = try_extract_company_name(text)
         rep = None
-        if candidate:
-            try:
-                rep = find_rep_for_company(candidate)
-            except Exception:
-                # Sheets lookup can fail (bad credentials, API outage, etc.) - don't let
-                # that stop the customer from getting an answer, just skip the rep lookup.
-                logger.exception("Sales rep lookup failed for candidate company '%s'", candidate)
+
+        # Try the customer's WhatsApp number against the sheet's Company Phone
+        # column first - if it matches, we can identify them and their rep
+        # without asking anything, even on their very first message.
+        try:
+            rep = find_rep_for_phone(phone)
+        except Exception:
+            logger.exception("Phone-based rep lookup failed for %s", phone)
+
+        candidate = None
+        if not rep:
+            candidate = try_extract_company_name(text)
+            if candidate:
+                try:
+                    rep = find_rep_for_company(candidate)
+                except Exception:
+                    # Sheets lookup can fail (bad credentials, API outage, etc.) - don't let
+                    # that stop the customer from getting an answer, just skip the rep lookup.
+                    logger.exception("Sales rep lookup failed for candidate company '%s'", candidate)
 
         if rep:
             store.upsert_customer(phone, rep["company_name"], rep["rep_name"], rep["rep_phone"], rep["rep_email"])
