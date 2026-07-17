@@ -276,6 +276,69 @@ def get_conversation(phone: str, start: str = None, end: str = None):
         _put_conn(conn)
 
 
+def get_leads_summary(start: str = None, end: str = None):
+    """One row per sales rep, counting how many leads (escalated enquiries -
+    purchase intent, quote requests, complaints, etc.) the AI flagged for
+    them in the range, plus their most recent lead. A "lead" is an outbound
+    bot reply marked escalated=1 (see main.py's needs_escalation check) -
+    the escalated flag is only ever set on the bot's reply, not the
+    customer's inbound message, so this counts on direction='out'."""
+    conn = _get_conn()
+    try:
+        where, params = _date_where(start, end)
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT COALESCE(NULLIF(cu.rep_name, ''), 'Unassigned'),
+                       COUNT(*) AS lead_count,
+                       COUNT(DISTINCT c.phone) AS customer_count,
+                       MAX(c.created_at) AS last_lead_at
+                FROM conversations c
+                LEFT JOIN customers cu ON cu.phone = c.phone
+                WHERE c.direction = 'out' AND c.escalated = 1 {where}
+                GROUP BY COALESCE(NULLIF(cu.rep_name, ''), 'Unassigned')
+                ORDER BY lead_count DESC
+            """, params)
+            keys = ["rep_name", "lead_count", "customer_count", "last_lead_at"]
+            return [dict(zip(keys, row)) for row in cur.fetchall()]
+    finally:
+        _put_conn(conn)
+
+
+def get_leads_list(start: str = None, end: str = None):
+    """Every individual lead in the range, most recent first: the customer's
+    original enquiry (the inbound message immediately preceding the
+    escalated outbound reply) plus who it was routed to."""
+    conn = _get_conn()
+    try:
+        where, params = _date_where(start, end, column="out_msg.created_at")
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT out_msg.created_at,
+                       out_msg.phone,
+                       COALESCE(cu.company_name, ''),
+                       COALESCE(NULLIF(cu.rep_name, ''), 'Unassigned'),
+                       COALESCE(
+                           (SELECT in_msg.message
+                            FROM conversations in_msg
+                            WHERE in_msg.phone = out_msg.phone
+                              AND in_msg.direction = 'in'
+                              AND in_msg.id < out_msg.id
+                            ORDER BY in_msg.id DESC
+                            LIMIT 1),
+                           ''
+                       ) AS enquiry_text
+                FROM conversations out_msg
+                LEFT JOIN customers cu ON cu.phone = out_msg.phone
+                WHERE out_msg.direction = 'out' AND out_msg.escalated = 1
+                {where}
+                ORDER BY out_msg.created_at DESC
+            """, params)
+            keys = ["created_at", "phone", "company_name", "rep_name", "enquiry_text"]
+            return [dict(zip(keys, row)) for row in cur.fetchall()]
+    finally:
+        _put_conn(conn)
+
+
 def get_all_messages(start: str = None, end: str = None):
     """All messages in range, for Excel export."""
     conn = _get_conn()
@@ -295,13 +358,13 @@ def get_all_messages(start: str = None, end: str = None):
         _put_conn(conn)
 
 
-def _date_where(start: str, end: str):
+def _date_where(start: str, end: str, column: str = "created_at"):
     clauses, params = [], []
     if start:
-        clauses.append("created_at >= %s")
+        clauses.append(f"{column} >= %s")
         params.append(f"{start}T00:00:00+00:00")
     if end:
-        clauses.append("created_at <= %s")
+        clauses.append(f"{column} <= %s")
         params.append(f"{end}T23:59:59.999999+00:00")
     where = ("AND " + " AND ".join(clauses)) if clauses else ""
     return where, params

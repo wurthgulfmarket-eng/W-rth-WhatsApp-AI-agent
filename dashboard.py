@@ -95,9 +95,13 @@ def dashboard_page(request: Request, start: str = "", end: str = "", phone: str 
     stats = store.get_stats(start, end)
     daily = store.get_daily_counts(start, end)
     customers = store.get_customers_summary(start, end)
+    leads_summary = store.get_leads_summary(start, end)
+    leads_list = store.get_leads_list(start, end)
     transcript = store.get_conversation(phone, start, end) if phone else None
 
-    return HTMLResponse(_render_dashboard_html(start, end, stats, daily, customers, phone, transcript))
+    return HTMLResponse(_render_dashboard_html(
+        start, end, stats, daily, customers, leads_summary, leads_list, phone, transcript
+    ))
 
 
 @router.get("/dashboard/export")
@@ -138,6 +142,20 @@ def export_excel(request: Request, start: str = "", end: str = ""):
         ws3.append([row["day"], row["received"], row["sent"]])
     for col_letter, width in zip("ABC", [14, 18, 14]):
         ws3.column_dimensions[col_letter].width = width
+
+    ws4 = wb.create_sheet("Sales Leads")
+    ws4.append(["Sales Rep", "Leads Generated", "Unique Customers", "Last Lead (UTC)"])
+    for row in store.get_leads_summary(start, end):
+        ws4.append([row["rep_name"], row["lead_count"], row["customer_count"], str(row["last_lead_at"])])
+    for col_letter, width in zip("ABCD", [22, 16, 18, 26]):
+        ws4.column_dimensions[col_letter].width = width
+
+    ws5 = wb.create_sheet("Lead Details")
+    ws5.append(["Timestamp (UTC)", "Phone", "Company", "Sales Rep", "Customer Enquiry"])
+    for row in store.get_leads_list(start, end):
+        ws5.append([str(row["created_at"]), row["phone"], row["company_name"], row["rep_name"], row["enquiry_text"]])
+    for col_letter, width in zip("ABCDE", [26, 16, 24, 20, 60]):
+        ws5.column_dimensions[col_letter].width = width
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -208,10 +226,30 @@ def _render_login_html(error: str = "") -> str:
 </html>"""
 
 
-def _render_dashboard_html(start, end, stats, daily, customers, selected_phone, transcript):
+def _render_dashboard_html(start, end, stats, daily, customers, leads_summary, leads_list, selected_phone, transcript):
     daily_rows = "".join(
         f"<tr><td>{d['day']}</td><td>{d['received']}</td><td>{d['sent']}</td></tr>" for d in daily
     ) or "<tr><td colspan='3' class='muted'>No data in this range</td></tr>"
+
+    total_leads = sum(r["lead_count"] for r in leads_summary)
+
+    leads_summary_rows = "".join(
+        f"""<tr>
+            <td>{_esc(r['rep_name'])}</td>
+            <td>{r['lead_count']}</td>
+            <td>{r['customer_count']}</td>
+            <td>{_fmt_ts(r['last_lead_at'])}</td>
+        </tr>""" for r in leads_summary
+    ) or "<tr><td colspan='4' class='muted'>No leads in this range</td></tr>"
+
+    leads_list_rows = "".join(
+        f"""<tr>
+            <td>{_fmt_ts(l['created_at'])}</td>
+            <td>{_esc(l['company_name']) or _esc(l['phone'])}</td>
+            <td>{_esc(l['rep_name'])}</td>
+            <td>{_esc(l['enquiry_text'])}</td>
+        </tr>""" for l in leads_list
+    ) or "<tr><td colspan='4' class='muted'>No leads in this range</td></tr>"
 
     customer_rows = "".join(
         f"""<tr class="{'active' if c['phone'] == selected_phone else ''}">
@@ -307,7 +345,7 @@ def _render_dashboard_html(start, end, stats, daily, customers, selected_phone, 
     <div class="stat-card"><div class="value">{stats['messages_received']}</div><div class="label">Messages received</div></div>
     <div class="stat-card"><div class="value">{stats['replies_sent']}</div><div class="label">Replies sent</div></div>
     <div class="stat-card"><div class="value">{stats['unique_customers']}</div><div class="label">Unique customers</div></div>
-    <div class="stat-card"><div class="value">{stats['escalations']}</div><div class="label">Escalations</div></div>
+    <div class="stat-card"><div class="value">{total_leads}</div><div class="label">Sales leads generated</div></div>
   </div>
 
   <div class="panel">
@@ -315,6 +353,24 @@ def _render_dashboard_html(start, end, stats, daily, customers, selected_phone, 
     <table>
       <tr><th>Date</th><th>Received</th><th>Sent</th></tr>
       {daily_rows}
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Sales leads by rep &middot; how AI is helping the team ({total_leads} total)</h2>
+    <p class="muted" style="margin-top:-4px">A "lead" is a customer enquiry the AI recognized as purchase intent, a quote/pricing \
+request, or an urgent issue, and flagged for the assigned sales rep to follow up on.</p>
+    <table>
+      <tr><th>Sales Rep</th><th>Leads</th><th>Customers</th><th>Last lead</th></tr>
+      {leads_summary_rows}
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Recent leads</h2>
+    <table>
+      <tr><th>When</th><th>Customer</th><th>Rep</th><th>Enquiry</th></tr>
+      {leads_list_rows}
     </table>
   </div>
 
