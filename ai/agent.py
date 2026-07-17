@@ -33,6 +33,9 @@ ESCALATION_KEYWORDS = [
     "quote", "quotation", "price for", "discount", "complaint", "refund",
     "cancel order", "not working", "damaged", "speak to human", "talk to someone",
     "urgent", "angry", "disappointed",
+    # Order/purchase intent - a customer this close to buying should reach
+    "place an order", "i want to buy", "i want to order", "how many can i get",
+    "in stock", "bulk order", "how much for", "can i get a price",
 ]
 
 SYSTEM_PROMPT_TEMPLATE = """You are a real member of the Würth UAE team chatting with a customer on WhatsApp - not \

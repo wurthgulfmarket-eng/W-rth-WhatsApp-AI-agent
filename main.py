@@ -310,10 +310,31 @@ def _send(phone: str, message: str, escalated: bool = False):
 
 
 def _notify_escalation(customer_phone: str, message: str, customer: dict | None):
+    company = customer["company_name"] if customer else "Unknown company"
+    rep_phone = (customer or {}).get("rep_phone", "").strip()
+    rep_name = (customer or {}).get("rep_name", "").strip()
+
+    # Notify the customer's actual assigned sales rep directly, if we have
+    # their number - framed as a live opportunity to follow up on, not just
+    # a generic alert, so the rep is motivated to act on it quickly.
+    if rep_phone:
+        rep_alert = (
+            f"New enquiry from {company} (+{customer_phone}) on WhatsApp:\n"
+            f"\"{message}\"\n\n"
+            f"They may be ready to place an order or need a quote - reach out soon "
+            f"to help them and close this one for your target!"
+        )
+        try:
+            send_text_message(_to_whatsapp_number(rep_phone), rep_alert)
+            logger.info("Notified rep %s (%s) about enquiry from %s", rep_name, rep_phone, customer_phone)
+        except WhatsAppError as e:
+            logger.error("Failed to notify rep %s at %s: %s", rep_name, rep_phone, e)
+
+    # Also notify the fixed staff/ops list, if configured - useful as a
+    # fallback when no rep is assigned yet, or for general oversight.
     if not config.ESCALATION_NOTIFY_NUMBERS:
         return
-    company = customer["company_name"] if customer else "Unknown company"
-    rep_note = f" (rep: {customer.get('rep_name')})" if customer and customer.get("rep_name") else ""
+    rep_note = f" (rep: {rep_name})" if rep_name else " (no rep assigned yet)"
     alert = (
         f"Escalation needed{rep_note}\n"
         f"Customer: +{customer_phone} - {company}\n"
@@ -324,3 +345,9 @@ def _notify_escalation(customer_phone: str, message: str, customer: dict | None)
             send_text_message(staff_number, alert)
         except WhatsAppError as e:
             logger.error("Failed to send escalation alert to %s: %s", staff_number, e)
+
+
+def _to_whatsapp_number(phone: str) -> str:
+    """Normalizes a phone number from the sheet (which may have +, spaces,
+    or dashes) to the digits-only format the WhatsApp Cloud API expects."""
+    return "".join(ch for ch in phone if ch.isdigit())
