@@ -149,16 +149,43 @@ def generate_image_reply(image_bytes: bytes, mime_type: str, rep: dict | None, c
     return chat_completion(messages, model=config.OPENROUTER_VISION_MODEL)
 
 
+# Casual greetings/filler that must never be treated as a candidate company
+# name - without this, a customer just saying "hi" could get fuzzy-matched
+# against a real row in the sales rep sheet and be told a stranger's name
+# and phone number as "their" assigned rep.
+_NON_COMPANY_PHRASES = {
+    "hi", "hello", "hey", "yo", "sup", "hiya", "hii", "hai",
+    "yes", "no", "ok", "okay", "sure", "thanks", "thank you", "thx",
+    "good morning", "good afternoon", "good evening", "morning", "evening",
+    "how are you", "how r u", "hru", "test", "testing",
+}
+
+
 def try_extract_company_name(message: str) -> str | None:
     """
     Very light heuristic for when we ask 'which company are you from?' and the
-    customer replies with just a name. Strips common filler phrases.
+    customer replies with just a name. Strips common filler phrases and
+    rejects casual greetings/one-word chit-chat that isn't actually a company
+    name (see _NON_COMPANY_PHRASES) - those must never reach the fuzzy
+    matcher, since a short/generic string can spuriously score above the
+    match threshold against an unrelated real company in the sheet.
     For more robust extraction, replace this with an OpenRouter call that
     returns structured JSON.
     """
     text = message.strip()
     text = re.sub(r"(?i)^(i'?m from|we are|company is|it'?s|this is)\s*", "", text)
-    text = text.strip(" .")
+    text = text.strip(" .!?")
+
+    if text.lower() in _NON_COMPANY_PHRASES:
+        return None
+    # A bare word with no company-like signal (letters only, no digits, no
+    # multi-word structure, very short) is far more likely to be chit-chat
+    # than an actual company name - require at least a space (multi-word) or
+    # some digit/symbol that suggests a real business name, unless it's
+    # reasonably long.
+    if " " not in text and not any(ch.isdigit() for ch in text) and len(text) < 4:
+        return None
+
     if 2 <= len(text) <= 80:
         return text
     return None

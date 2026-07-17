@@ -38,7 +38,7 @@ class Config:
     GOOGLE_SHEET_WORKSHEET_NAME = os.getenv("GOOGLE_SHEET_WORKSHEET_NAME", "Sheet1")
 
     # App behavior
-    FUZZY_MATCH_THRESHOLD = int(os.getenv("FUZZY_MATCH_THRESHOLD", "75"))
+    FUZZY_MATCH_THRESHOLD = int(os.getenv("FUZZY_MATCH_THRESHOLD", "85"))
     ESCALATION_NOTIFY_NUMBERS = _split_csv(os.getenv("ESCALATION_NOTIFY_NUMBERS", ""))
     PORT = int(os.getenv("PORT", "8000"))
 
