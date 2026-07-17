@@ -42,14 +42,6 @@ class Config:
     ESCALATION_NOTIFY_NUMBERS = _split_csv(os.getenv("ESCALATION_NOTIFY_NUMBERS", ""))
     PORT = int(os.getenv("PORT", "8000"))
 
-    # Database - Postgres (e.g. Supabase) is required for persistence, since
-    # Render's free tier filesystem is ephemeral and wipes SQLite on every
-    # deploy/restart. Paste the full connection string from your provider,
-    # e.g. postgresql://user:password@host:5432/dbname - special characters
-    # in the password do NOT need to be pre-encoded, storage/store.py handles
-    # that automatically.
-    DATABASE_URL = os.getenv("DATABASE_URL", "")
-
     # Dashboard admin login (separate from the WHATSAPP_VERIFY_TOKEN used for
     # webhook/rebuild-kb auth). Set these to enable the /dashboard login form.
     DASHBOARD_ADMIN_USERNAME = os.getenv("DASHBOARD_ADMIN_USERNAME", "")
@@ -65,6 +57,7 @@ class Config:
     DATA_DIR = os.path.join(BASE_DIR, "data")
     KB_JSON_PATH = os.path.join(DATA_DIR, "knowledge_base.json")
     KB_INDEX_PATH = os.path.join(DATA_DIR, "kb_index.pkl")
+    DB_PATH = os.path.join(DATA_DIR, "app.db")
 
 
 config = Config()
