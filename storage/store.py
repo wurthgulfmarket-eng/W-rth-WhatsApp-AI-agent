@@ -9,8 +9,9 @@ thread, since FastAPI's BackgroundTasks can run on different threads and a
 free-tier Postgres instance has a limited max connection count.
 """
 import logging
+import re
 from datetime import datetime, timezone
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote
 
 from psycopg2 import pool as pg_pool
 from psycopg2.extras import RealDictCursor
@@ -21,20 +22,23 @@ logger = logging.getLogger("wurth-agent.store")
 
 _pool = None
 
+# scheme://user:password@host:port/dbname - captured with a regex instead of
+# urllib.parse.urlsplit() because urlsplit() itself chokes on raw special
+# characters (e.g. "<") in an unencoded password before we get a chance to
+# encode it - it misreads "<3" as a possible IPv6-bracket host and raises
+# ValueError. A regex lets us grab the password as opaque text first.
+_DSN_PATTERN = re.compile(r"^(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]*)://(?P<user>[^:@/]*):(?P<password>.*)@(?P<rest>[^@]+)$")
+
 
 def _normalized_dsn(raw_url: str) -> str:
     """Re-encodes the password component so special characters (@, <, etc.)
     pasted directly into DATABASE_URL don't break URL parsing."""
-    parts = urlsplit(raw_url)
-    if "@" not in (parts.netloc or ""):
+    match = _DSN_PATTERN.match(raw_url)
+    if not match:
         return raw_url
 
-    userinfo, _, hostinfo = parts.netloc.rpartition("@")
-    if ":" in userinfo:
-        user, password = userinfo.split(":", 1)
-        userinfo = f"{quote(user, safe='')}:{quote(password, safe='')}"
-    netloc = f"{userinfo}@{hostinfo}"
-    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    scheme, user, password, rest = match.group("scheme", "user", "password", "rest")
+    return f"{scheme}://{quote(user, safe='')}:{quote(password, safe='')}@{rest}"
 
 
 def _get_pool():
