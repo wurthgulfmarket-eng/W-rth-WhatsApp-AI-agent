@@ -42,6 +42,15 @@ class Config:
     ESCALATION_NOTIFY_NUMBERS = _split_csv(os.getenv("ESCALATION_NOTIFY_NUMBERS", ""))
     PORT = int(os.getenv("PORT", "8000"))
 
+    # Lead-escalation WhatsApp message templates (optional). Free-form
+    # messages only deliver within Meta's 24-hour customer-service window;
+    # a Meta-approved template bypasses that restriction. Until these are
+    # set (after Meta approves the template), escalation falls back to
+    # free-form messages exactly as before - this is purely additive.
+    WHATSAPP_ESCALATION_TEMPLATE_NAME = os.getenv("WHATSAPP_ESCALATION_TEMPLATE_NAME", "")
+    WHATSAPP_ESCALATION_TEMPLATE_LANGUAGE = os.getenv("WHATSAPP_ESCALATION_TEMPLATE_LANGUAGE", "en")
+    WHATSAPP_ESCALATION_OPS_TEMPLATE_NAME = os.getenv("WHATSAPP_ESCALATION_OPS_TEMPLATE_NAME", "")
+
     # Database - Postgres is required for persistence, since Render's free
     # tier web service filesystem is ephemeral and wipes SQLite on every
     # deploy/restart. Use Render's own managed Postgres (New > PostgreSQL in

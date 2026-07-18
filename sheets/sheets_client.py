@@ -20,6 +20,7 @@ Setup:
    (found inside the JSON key) as Viewer.
 4. Put the sheet's ID (from its URL) into GOOGLE_SHEET_ID in .env.
 """
+import logging
 import re
 import threading
 import time
@@ -29,6 +30,9 @@ from google.oauth2.service_account import Credentials
 from rapidfuzz import fuzz, process
 
 from config import config
+from utils.phone import is_plausible_phone
+
+logger = logging.getLogger("wurth-agent.sheets")
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
@@ -69,14 +73,20 @@ def _load_rows(force: bool = False):
         rows = []
         for r in records:
             normalized = {_normalize_key(k): v for k, v in r.items()}
-            rows.append({
+            row = {
                 "company_name": str(normalized.get("company_name", "")).strip(),
                 "company_phone": str(normalized.get("company_phone", "")).strip(),
                 "rep_name": str(normalized.get("sales_rep_name", "")).strip(),
                 "rep_phone": str(normalized.get("rep_phone", "")).strip(),
                 "rep_email": str(normalized.get("rep_email", "")).strip(),
                 "region": str(normalized.get("region", "")).strip(),
-            })
+            }
+            if row["rep_phone"] and not is_plausible_phone(row["rep_phone"]):
+                logger.warning(
+                    "Sheet row for company '%s' has an implausible Rep Phone value: %r - "
+                    "escalation notifications to this rep may fail", row["company_name"], row["rep_phone"],
+                )
+            rows.append(row)
 
         _cache["rows"] = rows
         _cache["loaded_at"] = time.time()

@@ -94,6 +94,24 @@ def _init_schema():
                 message_id TEXT PRIMARY KEY,
                 processed_at TIMESTAMPTZ
             );
+
+            CREATE TABLE IF NOT EXISTS escalation_attempts (
+                id SERIAL PRIMARY KEY,
+                conversation_id INTEGER REFERENCES conversations(id),
+                customer_phone TEXT NOT NULL,
+                target_type TEXT NOT NULL,        -- 'rep' or 'ops_fallback'
+                target_phone TEXT NOT NULL,
+                target_name TEXT,
+                message_type TEXT NOT NULL,       -- 'template' or 'freeform'
+                template_name TEXT,
+                success INTEGER NOT NULL,
+                whatsapp_message_id TEXT,         -- for future delivery-status webhook correlation
+                error_detail TEXT,
+                created_at TIMESTAMPTZ NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_escalation_attempts_conversation ON escalation_attempts (conversation_id);
+            CREATE INDEX IF NOT EXISTS idx_escalation_attempts_phone ON escalation_attempts (customer_phone);
+            CREATE INDEX IF NOT EXISTS idx_escalation_attempts_created_at ON escalation_attempts (created_at);
             """)
         conn.commit()
     finally:
@@ -159,15 +177,45 @@ def upsert_customer(phone: str, company_name: str, rep_name: str = "", rep_phone
         _put_conn(conn)
 
 
-def log_message(phone: str, direction: str, message: str, escalated: bool = False):
+def log_message(phone: str, direction: str, message: str, escalated: bool = False) -> int:
+    """Returns the new row's id, so callers (e.g. escalation notification)
+    can attach related records (escalation_attempts) to this conversation."""
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO conversations (phone, direction, message, escalated, created_at) "
-                "VALUES (%s, %s, %s, %s, %s)",
+                "VALUES (%s, %s, %s, %s, %s) RETURNING id",
                 (phone, direction, message, int(escalated), datetime.now(timezone.utc)),
             )
+            new_id = cur.fetchone()[0]
+        conn.commit()
+        return new_id
+    finally:
+        _put_conn(conn)
+
+
+def record_escalation_attempt(
+    conversation_id: int | None, customer_phone: str, target_type: str, target_phone: str,
+    target_name: str | None, message_type: str, template_name: str | None,
+    success: bool, whatsapp_message_id: str | None, error_detail: str | None,
+):
+    """Records one notification attempt (success or failure) to a rep or an
+    ops-fallback number, so delivery outcomes are visible on the dashboard
+    instead of only appearing in logs (which may not be durably retained)."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO escalation_attempts (
+                    conversation_id, customer_phone, target_type, target_phone, target_name,
+                    message_type, template_name, success, whatsapp_message_id, error_detail, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                conversation_id, customer_phone, target_type, target_phone, target_name,
+                message_type, template_name, int(success), whatsapp_message_id, error_detail,
+                datetime.now(timezone.utc),
+            ))
         conn.commit()
     finally:
         _put_conn(conn)
@@ -279,10 +327,12 @@ def get_conversation(phone: str, start: str = None, end: str = None):
 def get_leads_summary(start: str = None, end: str = None):
     """One row per sales rep, counting how many leads (escalated enquiries -
     purchase intent, quote requests, complaints, etc.) the AI flagged for
-    them in the range, plus their most recent lead. A "lead" is an outbound
-    bot reply marked escalated=1 (see main.py's needs_escalation check) -
-    the escalated flag is only ever set on the bot's reply, not the
-    customer's inbound message, so this counts on direction='out'."""
+    them in the range, their most recent lead, and how many of those leads'
+    rep-notification attempts failed entirely (a fast signal that a rep's
+    phone number might be wrong). A "lead" is an outbound bot reply marked
+    escalated=1 (see main.py's needs_escalation check) - the escalated flag
+    is only ever set on the bot's reply, not the customer's inbound
+    message, so this counts on direction='out'."""
     conn = _get_conn()
     try:
         where, params = _date_where(start, end)
@@ -291,14 +341,20 @@ def get_leads_summary(start: str = None, end: str = None):
                 SELECT COALESCE(NULLIF(cu.rep_name, ''), 'Unassigned'),
                        COUNT(*) AS lead_count,
                        COUNT(DISTINCT c.phone) AS customer_count,
-                       MAX(c.created_at) AS last_lead_at
+                       MAX(c.created_at) AS last_lead_at,
+                       COUNT(*) FILTER (WHERE attempts.attempt_count > 0 AND attempts.any_success IS NOT TRUE) AS failed_notifications
                 FROM conversations c
                 LEFT JOIN customers cu ON cu.phone = c.phone
+                LEFT JOIN LATERAL (
+                    SELECT BOOL_OR(success = 1) AS any_success, COUNT(*) AS attempt_count
+                    FROM escalation_attempts ea
+                    WHERE ea.conversation_id = c.id
+                ) attempts ON true
                 WHERE c.direction = 'out' AND c.escalated = 1 {where}
                 GROUP BY COALESCE(NULLIF(cu.rep_name, ''), 'Unassigned')
                 ORDER BY lead_count DESC
             """, params)
-            keys = ["rep_name", "lead_count", "customer_count", "last_lead_at"]
+            keys = ["rep_name", "lead_count", "customer_count", "last_lead_at", "failed_notifications"]
             return [dict(zip(keys, row)) for row in cur.fetchall()]
     finally:
         _put_conn(conn)
@@ -307,7 +363,10 @@ def get_leads_summary(start: str = None, end: str = None):
 def get_leads_list(start: str = None, end: str = None):
     """Every individual lead in the range, most recent first: the customer's
     original enquiry (the inbound message immediately preceding the
-    escalated outbound reply) plus who it was routed to."""
+    escalated outbound reply), who it was routed to, and delivery_status
+    ("delivered" if any escalation_attempts row succeeded, "failed" if
+    attempts exist but none succeeded, "pending" if no attempt was recorded
+    at all - should be rare once escalation always records an attempt)."""
     conn = _get_conn()
     try:
         where, params = _date_where(start, end, column="out_msg.created_at")
@@ -326,15 +385,35 @@ def get_leads_list(start: str = None, end: str = None):
                             ORDER BY in_msg.id DESC
                             LIMIT 1),
                            ''
-                       ) AS enquiry_text
+                       ) AS enquiry_text,
+                       attempts.any_success,
+                       attempts.attempt_count,
+                       attempts.attempt_summary
                 FROM conversations out_msg
                 LEFT JOIN customers cu ON cu.phone = out_msg.phone
+                LEFT JOIN LATERAL (
+                    SELECT
+                        BOOL_OR(success = 1) AS any_success,
+                        COUNT(*) AS attempt_count,
+                        STRING_AGG(DISTINCT target_type || ':' || CASE WHEN success = 1 THEN 'ok' ELSE 'fail' END, ', ') AS attempt_summary
+                    FROM escalation_attempts ea
+                    WHERE ea.conversation_id = out_msg.id
+                ) attempts ON true
                 WHERE out_msg.direction = 'out' AND out_msg.escalated = 1
                 {where}
                 ORDER BY out_msg.created_at DESC
             """, params)
-            keys = ["created_at", "phone", "company_name", "rep_name", "enquiry_text"]
-            return [dict(zip(keys, row)) for row in cur.fetchall()]
+            keys = ["created_at", "phone", "company_name", "rep_name", "enquiry_text",
+                     "any_success", "attempt_count", "attempt_summary"]
+            rows = [dict(zip(keys, row)) for row in cur.fetchall()]
+            for row in rows:
+                if not row["attempt_count"]:
+                    row["delivery_status"] = "pending"
+                elif row["any_success"]:
+                    row["delivery_status"] = "delivered"
+                else:
+                    row["delivery_status"] = "failed"
+            return rows
     finally:
         _put_conn(conn)
 

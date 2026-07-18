@@ -31,12 +31,38 @@ Assigned sales representative for this customer:
 
 ESCALATION_KEYWORDS = [
     "quote", "quotation", "price for", "discount", "complaint", "refund",
-    "cancel order", "not working", "damaged", "speak to human", "talk to someone",
+    "cancel order", "damaged", "speak to human", "talk to someone",
     "urgent", "angry", "disappointed",
+    # Product complaints - specific phrasing only, since a bare "not working"
+    # also matches unrelated sentences like "I am not working there anymore"
+    "is not working", "isn't working", "isnt working", "stopped working",
     # Order/purchase intent - a customer this close to buying should reach
     "place an order", "i want to buy", "i want to order", "how many can i get",
     "in stock", "bulk order", "how much for", "can i get a price",
 ]
+
+# Signals that a message is an automated system reply (WhatsApp "away
+# message" / business auto-response), not genuine customer intent - checked
+# before the message ever reaches the AI, so auto-replies can never be
+# tagged as leads regardless of what the model would otherwise decide.
+_AUTO_REPLY_SIGNALS = [
+    "thank you for connecting with us",
+    "thank you for contacting",
+    "i am currently on vacation",
+    "i'm currently on vacation",
+    "currently out of office",
+    "currently away from",
+    "will respond when i am back",
+    "will respond when i'm back",
+    "automated response",
+    "auto-reply",
+    "autoreply",
+]
+
+
+def is_auto_reply(message: str) -> bool:
+    lowered = message.lower()
+    return any(signal in lowered for signal in _AUTO_REPLY_SIGNALS)
 
 # The model appends one of these tags at the very end of its reply so we can
 # reliably detect lead intent - keyword matching alone missed cases like
@@ -82,13 +108,25 @@ context based on their Emirate/area if mentioned, or ask which Emirate they're i
 needs more detail.
 
 **Lead tagging (required on every reply):** after writing your reply, end it with exactly one tag on its own new \
-line: {lead_tag} if this message shows the customer is interested in a specific product/service and might be ready \
-to order, get a quote, or needs a rep's help soon (e.g. asking if you carry/have/stock something, asking about \
-pricing or availability, wanting to buy, having an issue that needs human follow-up) - or {no_lead_tag} for general \
-chat, greetings, browsing questions with no clear intent yet, or anything already fully resolved (e.g. a simple \
-"okay"/"thanks" with nothing new being asked). When in doubt about genuine product/service interest, prefer \
-{lead_tag} - the cost of missing a real lead is worse than one extra notification to the rep. This tag is stripped \
-before the customer sees your message, so it does not need to read naturally - just place it on its own final line.
+line: {lead_tag} if this message shows the customer is interested in a specific Würth product/service and might be \
+ready to order, get a quote, or needs a rep's help soon (e.g. asking if you carry/have/stock something, asking \
+about pricing or availability, wanting to buy, having an issue that needs human follow-up) - or {no_lead_tag} for \
+general chat, greetings, browsing questions with no clear intent yet, or anything already fully resolved (e.g. a \
+simple "okay"/"thanks" with nothing new being asked). When in doubt about genuine interest in Würth's products or \
+services specifically, prefer {lead_tag} - the cost of missing a real lead is worse than one extra notification to \
+the rep.
+
+**Never tag {lead_tag} for these, even though they may superficially resemble business content** - always use \
+{no_lead_tag} instead:
+- Automated/system text: out-of-office replies, "thank you for connecting/contacting us" auto-responses, vacation \
+  or away messages.
+- The customer talking about their OWN employment or company status, not about Würth's products (e.g. "I don't \
+  work there anymore", "I'm with a different company now", "I no longer handle purchasing") - this is not \
+  purchase intent, it's the customer updating you on who they are.
+- Small talk, thanks, acknowledgements, or anything that doesn't express interest in something Würth sells or does.
+
+This tag is stripped before the customer sees your message, so it does not need to read naturally - just place it \
+on its own final line.
 
 Knowledge base context:
 {kb_context}
@@ -163,7 +201,13 @@ def generate_reply(customer_message: str, rep: dict | None, history: list = None
     raw_reply = chat_completion(messages)
     reply, model_says_lead = _strip_lead_tag(raw_reply)
 
-    is_lead = bool(model_says_lead) or needs_escalation(customer_message)
+    if is_auto_reply(customer_message):
+        # Automated system text (out-of-office, "thank you for connecting"
+        # auto-responses) is never a real lead, regardless of what the model
+        # or keyword backstop would otherwise decide - overrides both.
+        is_lead = False
+    else:
+        is_lead = bool(model_says_lead) or needs_escalation(customer_message)
     return reply, is_lead
 
 

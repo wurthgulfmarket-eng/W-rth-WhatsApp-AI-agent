@@ -19,7 +19,8 @@ from dashboard import router as dashboard_router
 from privacy_policy import PRIVACY_POLICY_HTML
 from sheets.sheets_client import find_rep_for_company, find_rep_for_phone
 from storage import store
-from whatsapp.client import send_text_message, mark_as_read, WhatsAppError
+from utils.phone import is_plausible_phone, to_whatsapp_number
+from whatsapp.client import send_text_message, send_template_message, mark_as_read, WhatsAppError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("wurth-agent")
@@ -295,20 +296,78 @@ def handle_customer_message(phone: str, text: str):
 
     if escalate:
         reply += "\n\nI've flagged this for your sales representative to follow up personally."
-        _notify_escalation(phone, text, customer)
 
-    _send(phone, reply, escalated=escalate)
+    conversation_id = _send(phone, reply, escalated=escalate)
+
+    if escalate:
+        _notify_escalation(conversation_id, phone, text, customer)
 
 
-def _send(phone: str, message: str, escalated: bool = False):
+def _send(phone: str, message: str, escalated: bool = False) -> int | None:
+    """Returns the new conversations.id, or None if the send itself failed
+    (in which case there's nothing to attach escalation records to)."""
     try:
         send_text_message(phone, message)
-        store.log_message(phone, "out", message, escalated=escalated)
+        return store.log_message(phone, "out", message, escalated=escalated)
     except WhatsAppError as e:
         logger.error("Failed to send WhatsApp message to %s: %s", phone, e)
+        return None
 
 
-def _notify_escalation(customer_phone: str, message: str, customer: dict | None):
+def _send_and_record_escalation(
+    conversation_id: int | None, customer_phone: str, target_type: str, target_phone: str,
+    target_name: str | None, message_text: str,
+) -> bool:
+    """Sends one escalation notification (to a rep or an ops-fallback
+    number) and unconditionally records the attempt - success or failure -
+    so delivery outcomes are visible on the dashboard instead of only
+    appearing in logs. Returns whether the send succeeded, so the caller
+    can decide whether to fall back to another target."""
+    if not is_plausible_phone(target_phone):
+        logger.warning("Skipping escalation notify to %s (%s) - implausible phone format", target_name, target_phone)
+        store.record_escalation_attempt(
+            conversation_id, customer_phone, target_type, target_phone, target_name,
+            "freeform", None, False, None, "invalid phone format",
+        )
+        return False
+
+    template_name = (
+        config.WHATSAPP_ESCALATION_TEMPLATE_NAME if target_type == "rep"
+        else config.WHATSAPP_ESCALATION_OPS_TEMPLATE_NAME
+    )
+    normalized_phone = to_whatsapp_number(target_phone)
+
+    whatsapp_message_id = None
+    error_detail = None
+    success = False
+    message_type = "freeform"
+
+    try:
+        if template_name:
+            message_type = "template"
+            components = [{"type": "body", "parameters": [
+                {"type": "text", "text": target_name or "Würth UAE"},
+                {"type": "text", "text": customer_phone},
+                {"type": "text", "text": message_text[:1000]},
+            ]}]
+            resp = send_template_message(normalized_phone, template_name, config.WHATSAPP_ESCALATION_TEMPLATE_LANGUAGE, components)
+        else:
+            resp = send_text_message(normalized_phone, message_text)
+        whatsapp_message_id = resp.get("messages", [{}])[0].get("id")
+        success = True
+        logger.info("Notified %s %s (%s) about enquiry from %s", target_type, target_name, target_phone, customer_phone)
+    except WhatsAppError as e:
+        error_detail = str(e)
+        logger.error("Failed to notify %s %s at %s: %s", target_type, target_name, target_phone, e)
+
+    store.record_escalation_attempt(
+        conversation_id, customer_phone, target_type, normalized_phone, target_name,
+        message_type, template_name, success, whatsapp_message_id, error_detail,
+    )
+    return success
+
+
+def _notify_escalation(conversation_id: int | None, customer_phone: str, message: str, customer: dict | None):
     company = customer["company_name"] if customer else "Unknown company"
     rep_phone = (customer or {}).get("rep_phone", "").strip()
     rep_name = (customer or {}).get("rep_name", "").strip()
@@ -316,6 +375,7 @@ def _notify_escalation(customer_phone: str, message: str, customer: dict | None)
     # Notify the customer's actual assigned sales rep directly, if we have
     # their number - framed as a live opportunity to follow up on, not just
     # a generic alert, so the rep is motivated to act on it quickly.
+    rep_notified = False
     if rep_phone:
         rep_alert = (
             f"New enquiry from {company} (+{customer_phone}) on WhatsApp:\n"
@@ -323,16 +383,22 @@ def _notify_escalation(customer_phone: str, message: str, customer: dict | None)
             f"They may be ready to place an order or need a quote - reach out soon "
             f"to help them and close this one for your target!"
         )
-        try:
-            send_text_message(_to_whatsapp_number(rep_phone), rep_alert)
-            logger.info("Notified rep %s (%s) about enquiry from %s", rep_name, rep_phone, customer_phone)
-        except WhatsAppError as e:
-            logger.error("Failed to notify rep %s at %s: %s", rep_name, rep_phone, e)
+        rep_notified = _send_and_record_escalation(conversation_id, customer_phone, "rep", rep_phone, rep_name, rep_alert)
+    else:
+        logger.warning("No rep_phone on file for %s (%s) - skipping rep notification", customer_phone, company)
 
-    # Also notify the fixed staff/ops list, if configured - useful as a
-    # fallback when no rep is assigned yet, or for general oversight.
-    if not config.ESCALATION_NOTIFY_NUMBERS:
+    # Ops-fallback only fires if the rep notification failed or there was no
+    # rep to notify in the first place - not unconditionally alongside it.
+    if rep_notified:
         return
+
+    if not config.ESCALATION_NOTIFY_NUMBERS:
+        logger.warning(
+            "Rep notification failed/absent for %s and no ESCALATION_NOTIFY_NUMBERS configured - "
+            "this lead has no notification path", customer_phone,
+        )
+        return
+
     rep_note = f" (rep: {rep_name})" if rep_name else " (no rep assigned yet)"
     alert = (
         f"Escalation needed{rep_note}\n"
@@ -340,13 +406,4 @@ def _notify_escalation(customer_phone: str, message: str, customer: dict | None)
         f"Message: {message}"
     )
     for staff_number in config.ESCALATION_NOTIFY_NUMBERS:
-        try:
-            send_text_message(staff_number, alert)
-        except WhatsAppError as e:
-            logger.error("Failed to send escalation alert to %s: %s", staff_number, e)
-
-
-def _to_whatsapp_number(phone: str) -> str:
-    """Normalizes a phone number from the sheet (which may have +, spaces,
-    or dashes) to the digits-only format the WhatsApp Cloud API expects."""
-    return "".join(ch for ch in phone if ch.isdigit())
+        _send_and_record_escalation(conversation_id, customer_phone, "ops_fallback", staff_number, None, alert)
