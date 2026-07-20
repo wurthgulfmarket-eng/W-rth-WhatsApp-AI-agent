@@ -610,18 +610,18 @@ def get_rep_transcript(rep_phone: str, start: str = None, end: str = None):
     side."""
     conn = _get_conn()
     try:
-        where_out, params_out = _date_where(start, end, column="created_at")
-        where_in, params_in = _date_where(start, end, column="created_at")
+        where_out, params_out = _date_where(start, end, column="escalation_attempts.created_at")
+        where_in, params_in = _date_where(start, end, column="rr.created_at")
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(f"""
-                SELECT 'out' AS direction, created_at, target_name AS company_name,
+                SELECT 'out' AS direction, escalation_attempts.created_at AS created_at, target_name AS company_name,
                        customer_phone,
                        CASE WHEN success = 1 THEN 'Escalation alert delivered' ELSE 'Escalation alert failed' END AS message_text,
                        message_type AS extra
                 FROM escalation_attempts
                 WHERE target_type = 'rep' AND target_phone = %s {where_out}
                 UNION ALL
-                SELECT 'in' AS direction, rr.created_at,
+                SELECT 'in' AS direction, rr.created_at AS created_at,
                        COALESCE(cu.company_name, '') AS company_name,
                        l.phone AS customer_phone,
                        rr.reply_text AS message_text,
