@@ -2,11 +2,14 @@
 Thin client for OpenRouter's chat completions endpoint (OpenAI-compatible).
 Docs: https://openrouter.ai/docs
 """
+import logging
 import time
 
 import requests
 
 from config import config
+
+logger = logging.getLogger("wurth-agent.openrouter")
 
 
 class OpenRouterError(Exception):
@@ -22,9 +25,33 @@ _BACKOFF_BASE_SEC = 1.5
 
 
 def chat_completion(messages, temperature: float = 0.3, max_tokens: int = 600, model: str = None) -> str:
+    """Tries `model` (or config.OPENROUTER_MODEL if not given) first, with
+    retries on transient errors; if it's still failing after retries - e.g.
+    the underlying provider is at capacity, not just a momentary blip -
+    falls through to config.OPENROUTER_FALLBACK_MODELS in order, so one
+    free-tier provider being saturated doesn't fail every reply. Only
+    applies the fallback chain when the caller didn't request a specific
+    model explicitly for a reason other than the default (image replies
+    pass their own vision model and should not silently fall back to a
+    non-vision-capable model)."""
     if not config.OPENROUTER_API_KEY:
         raise OpenRouterError("OPENROUTER_API_KEY is not set in .env")
 
+    candidates = [model] if model else [config.OPENROUTER_MODEL, *config.OPENROUTER_FALLBACK_MODELS]
+
+    last_error = None
+    for candidate_model in candidates:
+        try:
+            return _call_with_retries(messages, temperature, max_tokens, candidate_model)
+        except OpenRouterError as e:
+            last_error = e
+            logger.warning("Model %s failed, %s: %s", candidate_model,
+                            "trying next fallback" if candidate_model != candidates[-1] else "no more fallbacks", e)
+
+    raise last_error
+
+
+def _call_with_retries(messages, temperature: float, max_tokens: int, model: str) -> str:
     last_error = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:

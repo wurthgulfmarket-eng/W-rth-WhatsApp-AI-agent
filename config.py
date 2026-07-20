@@ -23,6 +23,17 @@ class Config:
     # OpenRouter
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
     OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it:free")
+    # Free-tier models occasionally hit the underlying provider's own
+    # capacity limits (e.g. "Worker local total request limit reached") -
+    # this isn't a transient blip a retry alone fixes, since the whole
+    # provider is saturated. chat_completion() tries OPENROUTER_MODEL first,
+    # then each of these in order, only moving to the next one after
+    # exhausting retries on the current one - so one provider being at
+    # capacity doesn't take down replies to every customer.
+    OPENROUTER_FALLBACK_MODELS = _split_csv(os.getenv(
+        "OPENROUTER_FALLBACK_MODELS",
+        "google/gemma-4-26b-a4b-it:free,meta-llama/llama-3.3-70b-instruct:free",
+    ))
     # Used only for image messages - must be a vision/multimodal-capable model.
     # Defaults to the same model; override if OPENROUTER_MODEL doesn't support images.
     OPENROUTER_VISION_MODEL = os.getenv("OPENROUTER_VISION_MODEL", OPENROUTER_MODEL)

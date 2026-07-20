@@ -20,6 +20,8 @@ services:
         sync: false
       - key: OPENROUTER_MODEL
         value: nvidia/nemotron-3-ultra-550b-a55b:free
+      - key: OPENROUTER_FALLBACK_MODELS
+        value: "google/gemma-4-26b-a4b-it:free,meta-llama/llama-3.3-70b-instruct:free"
       - key: GOOGLE_SHEET_ID
         sync: false
       - key: GOOGLE_SERVICE_ACCOUNT_FILE
