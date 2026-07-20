@@ -114,6 +114,7 @@ def _send_day1_followups():
         components = [{"type": "body", "parameters": [
             {"type": "text", "parameter_name": "rep_name", "text": rep_first_name},
             {"type": "text", "parameter_name": "customer_name", "text": company_or_name},
+            {"type": "text", "parameter_name": "customer_phone", "text": lead["phone"]},
         ]}]
 
         try:
