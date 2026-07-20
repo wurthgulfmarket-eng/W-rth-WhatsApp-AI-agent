@@ -9,7 +9,7 @@ DASHBOARD_ADMIN_PASSWORD env vars), backed by a signed session cookie
 across the app's multiple worker/background threads without extra state.
 """
 import io
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
@@ -192,9 +192,18 @@ def _esc(s) -> str:
     return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# All timestamps are stored in Postgres as UTC (see storage/store.py's
+# datetime.now(timezone.utc) calls) - the dashboard is used by staff in the
+# UAE, so every displayed time is converted to Gulf Standard Time (UTC+4,
+# no daylight saving) here rather than showing raw UTC clock time.
+_DISPLAY_TZ = timezone(timedelta(hours=4))
+
+
 def _fmt_ts(ts) -> str:
     if isinstance(ts, datetime):
-        return ts.strftime("%Y-%m-%d %H:%M")
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.astimezone(_DISPLAY_TZ).strftime("%Y-%m-%d %H:%M")
     return str(ts)[:16].replace("T", " ")
 
 
