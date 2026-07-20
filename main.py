@@ -112,8 +112,8 @@ def _send_day1_followups():
         rep_first_name = (lead["rep_name"] or "").split(" ")[0] or "there"
 
         components = [{"type": "body", "parameters": [
-            {"type": "text", "text": rep_first_name},
-            {"type": "text", "text": company_or_name},
+            {"type": "text", "parameter_name": "rep_name", "text": rep_first_name},
+            {"type": "text", "parameter_name": "customer_name", "text": company_or_name},
         ]}]
 
         try:
@@ -441,9 +441,9 @@ def _send_and_record_escalation(
         if template_name:
             message_type = "template"
             components = [{"type": "body", "parameters": [
-                {"type": "text", "text": target_name or "Würth UAE"},
-                {"type": "text", "text": customer_phone},
-                {"type": "text", "text": message_text[:1000]},
+                {"type": "text", "parameter_name": "rep_name", "text": target_name or "Würth UAE"},
+                {"type": "text", "parameter_name": "customer_phone", "text": customer_phone},
+                {"type": "text", "parameter_name": "enquiry_text", "text": message_text[:1000]},
             ]}]
             resp = send_template_message(normalized_phone, template_name, config.WHATSAPP_ESCALATION_TEMPLATE_LANGUAGE, components)
         else:
