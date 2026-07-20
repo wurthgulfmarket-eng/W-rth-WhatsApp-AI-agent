@@ -32,5 +32,27 @@ services:
         value: "75"
       - key: ESCALATION_NOTIFY_NUMBERS
         sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: DASHBOARD_ADMIN_USERNAME
+        sync: false
+      - key: DASHBOARD_ADMIN_PASSWORD
+        sync: false
+      - key: DASHBOARD_SESSION_SECRET
+        sync: false
+      - key: WHATSAPP_ESCALATION_TEMPLATE_NAME
+        sync: false
+      - key: WHATSAPP_ESCALATION_TEMPLATE_LANGUAGE
+        value: en
+      - key: WHATSAPP_ESCALATION_OPS_TEMPLATE_NAME
+        sync: false
+      - key: LEAD_DEDUP_WINDOW_HOURS
+        value: "36"
+      - key: LEAD_FOLLOWUP_HOURS
+        value: "24"
+      - key: WHATSAPP_REP_REMINDER_TEMPLATE_NAME
+        sync: false
+      - key: WHATSAPP_REP_REMINDER_TEMPLATE_LANGUAGE
+        value: en
       - key: PYTHON_VERSION
         value: 3.11.9
