@@ -84,7 +84,7 @@ def logout():
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
-def dashboard_page(request: Request, start: str = "", end: str = "", phone: str = ""):
+def dashboard_page(request: Request, start: str = "", end: str = "", phone: str = "", rep_phone: str = ""):
     if not _is_logged_in(request):
         return RedirectResponse(url="/dashboard/login", status_code=303)
 
@@ -98,10 +98,13 @@ def dashboard_page(request: Request, start: str = "", end: str = "", phone: str 
     leads_summary = store.get_leads_summary(start, end)
     leads_list = store.get_leads_list(start, end)
     rep_replies = store.get_rep_replies_list(start, end)
+    reps = store.get_reps_summary(start, end)
     transcript = store.get_conversation(phone, start, end) if phone else None
+    rep_transcript = store.get_rep_transcript(rep_phone, start, end) if rep_phone else None
 
     return HTMLResponse(_render_dashboard_html(
-        start, end, stats, daily, customers, leads_summary, leads_list, rep_replies, phone, transcript
+        start, end, stats, daily, customers, leads_summary, leads_list, rep_replies, reps,
+        phone, transcript, rep_phone, rep_transcript,
     ))
 
 
@@ -265,7 +268,8 @@ def _render_login_html(error: str = "") -> str:
 </html>"""
 
 
-def _render_dashboard_html(start, end, stats, daily, customers, leads_summary, leads_list, rep_replies, selected_phone, transcript):
+def _render_dashboard_html(start, end, stats, daily, customers, leads_summary, leads_list, rep_replies, reps,
+                            selected_phone, transcript, selected_rep_phone, rep_transcript):
     daily_rows = "".join(
         f"<tr><td>{d['day']}</td><td>{d['received']}</td><td>{d['sent']}</td></tr>" for d in daily
     ) or "<tr><td colspan='3' class='muted'>No data in this range</td></tr>"
@@ -315,6 +319,15 @@ def _render_dashboard_html(start, end, stats, daily, customers, leads_summary, l
         </tr>""" for c in customers
     ) or "<tr><td colspan='5' class='muted'>No customers in this range</td></tr>"
 
+    rep_rows = "".join(
+        f"""<tr class="{'active' if r['rep_phone'] == selected_rep_phone else ''}">
+            <td><a href="?start={start}&end={end}&rep_phone={r['rep_phone']}">{_esc(r['rep_phone'])}</a></td>
+            <td>{_esc(r['rep_name']) or '<span class="muted">-</span>'}</td>
+            <td>{r['message_count']}</td>
+            <td>{_fmt_ts(r['last_activity_at'])}</td>
+        </tr>""" for r in reps
+    ) or "<tr><td colspan='4' class='muted'>No rep escalations in this range</td></tr>"
+
     if transcript is not None:
         if transcript:
             bubbles = "".join(
@@ -335,6 +348,28 @@ def _render_dashboard_html(start, end, stats, daily, customers, leads_summary, l
         <div class="panel">
             <h2>Transcript</h2>
             <p class="muted">Select a customer from the list to view their conversation.</p>
+        </div>"""
+
+    if rep_transcript is not None:
+        if rep_transcript:
+            rep_bubbles = "".join(
+                f"""<div class="bubble {'out' if m['direction'] == 'out' else 'in'}">
+                    <div class="bubble-text">{(_esc(m['company_name']) + ' &mdash; ') if m['company_name'] else ''}{_esc(m['message_text'])}</div>
+                    <div class="bubble-time">{_fmt_ts(m['created_at'])}{' &middot; ' + _esc(_CONFIDENCE_LABELS.get(m['extra'], m['extra'])) if m['direction'] == 'in' and m.get('extra') else ''}</div>
+                </div>""" for m in rep_transcript
+            )
+        else:
+            rep_bubbles = "<p class='muted'>No escalation activity for this rep in the selected date range.</p>"
+        rep_transcript_html = f"""
+        <div class="panel">
+            <h2>Rep escalation transcript &middot; {_esc(selected_rep_phone)}</h2>
+            <div class="chat-window">{rep_bubbles}</div>
+        </div>"""
+    else:
+        rep_transcript_html = """
+        <div class="panel">
+            <h2>Rep escalation transcript</h2>
+            <p class="muted">Select a rep from the list to view their escalation alerts and replies.</p>
         </div>"""
 
     return f"""<!DOCTYPE html>
@@ -454,6 +489,17 @@ view of rep engagement separate from the leads table above (which only shows the
       </table>
     </div>
     {transcript_html}
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Sales reps ({len(reps)})</h2>
+      <table>
+        <tr><th>Phone</th><th>Rep</th><th>Msgs</th><th>Last active</th></tr>
+        {rep_rows}
+      </table>
+    </div>
+    {rep_transcript_html}
   </div>
 
 </div>

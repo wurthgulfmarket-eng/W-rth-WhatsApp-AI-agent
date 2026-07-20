@@ -567,6 +567,76 @@ def get_conversation(phone: str, start: str = None, end: str = None):
         _put_conn(conn)
 
 
+def get_reps_summary(start: str = None, end: str = None):
+    """One row per distinct rep phone number that's ever been sent an
+    escalation, with a message count (escalation alerts + replies combined)
+    and last activity - the picker list for the rep transcript viewer,
+    mirroring get_customers_summary's shape for the customer transcript."""
+    conn = _get_conn()
+    try:
+        where_ea, params_ea = _date_where(start, end, column="created_at")
+        where_rr, params_rr = _date_where(start, end, column="created_at")
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                WITH rep_activity AS (
+                    SELECT target_phone AS rep_phone, target_name AS rep_name, created_at
+                    FROM escalation_attempts
+                    WHERE target_type = 'rep' {where_ea}
+                    UNION ALL
+                    SELECT rep_phone, NULL AS rep_name, created_at
+                    FROM rep_replies
+                    WHERE 1=1 {where_rr}
+                )
+                SELECT ra.rep_phone,
+                       COALESCE(MAX(ra.rep_name), MAX(cu.rep_name), '') AS rep_name,
+                       COUNT(*) AS message_count,
+                       MAX(ra.created_at) AS last_activity_at
+                FROM rep_activity ra
+                LEFT JOIN customers cu ON cu.rep_phone = ra.rep_phone
+                GROUP BY ra.rep_phone
+                ORDER BY last_activity_at DESC
+            """, params_ea + params_rr)
+            keys = ["rep_phone", "rep_name", "message_count", "last_activity_at"]
+            return [dict(zip(keys, row)) for row in cur.fetchall()]
+    finally:
+        _put_conn(conn)
+
+
+def get_rep_transcript(rep_phone: str, start: str = None, end: str = None):
+    """Full chat-style transcript for one rep: escalation alerts sent to
+    them (outbound) interleaved chronologically with their replies
+    (inbound), oldest first - mirrors get_conversation's shape/purpose but
+    for the rep side of the escalation channel instead of the customer
+    side."""
+    conn = _get_conn()
+    try:
+        where_out, params_out = _date_where(start, end, column="created_at")
+        where_in, params_in = _date_where(start, end, column="created_at")
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(f"""
+                SELECT 'out' AS direction, created_at, target_name AS company_name,
+                       customer_phone,
+                       CASE WHEN success = 1 THEN 'Escalation alert delivered' ELSE 'Escalation alert failed' END AS message_text,
+                       message_type AS extra
+                FROM escalation_attempts
+                WHERE target_type = 'rep' AND target_phone = %s {where_out}
+                UNION ALL
+                SELECT 'in' AS direction, rr.created_at,
+                       COALESCE(cu.company_name, '') AS company_name,
+                       l.phone AS customer_phone,
+                       rr.reply_text AS message_text,
+                       rr.resolution_method AS extra
+                FROM rep_replies rr
+                LEFT JOIN leads l ON l.id = rr.lead_id
+                LEFT JOIN customers cu ON cu.phone = l.phone
+                WHERE rr.rep_phone = %s {where_in}
+                ORDER BY created_at ASC
+            """, (rep_phone, *params_out, rep_phone, *params_in))
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        _put_conn(conn)
+
+
 def get_leads_summary(start: str = None, end: str = None):
     """One row per sales rep, counting how many distinct leads (deduplicated
     customer enquiries, see get_or_open_lead) were opened for them in the
