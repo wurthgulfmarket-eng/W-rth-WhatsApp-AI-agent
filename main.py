@@ -201,6 +201,26 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
         return {"status": "duplicate_ignored"}
     store.mark_processed(message_id)
 
+    # A sales rep replying to an escalation alert must never be routed
+    # through the customer AI-reply pipeline. Only take this path when we
+    # have real evidence the number is a rep (we've actually sent it an
+    # escalation before) AND either an exact swipe-to-reply match to a known
+    # alert, or the number isn't ALSO a known customer - if it's ambiguous
+    # (could be either), default to treating it as a customer message, since
+    # silently misfiling a real customer's message is worse than a rep
+    # occasionally getting an AI reply to their own text.
+    context_id = message.get("context", {}).get("id")
+    if store.find_rep_matches_for_phone(from_number) and (
+        context_id is not None or store.get_customer(from_number) is None
+    ):
+        if msg_type == "text":
+            text = message.get("text", {}).get("body", "").strip()
+            if text:
+                background_tasks.add_task(_process_rep_reply, from_number, text, message_id, context_id)
+        else:
+            logger.info("Ignoring non-text message from rep phone %s", from_number)
+        return {"status": "accepted"}
+
     if msg_type == "text":
         text = message.get("text", {}).get("body", "").strip()
         if not text:
@@ -222,6 +242,23 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
         return {"status": "ignored_unsupported_type"}
 
     return {"status": "accepted"}
+
+
+def _process_rep_reply(rep_phone: str, text: str, message_id: str, context_id: str | None):
+    """Captures a sales rep's WhatsApp reply to an escalation alert and links
+    it to the right lead (see storage.store.resolve_rep_reply_lead). This
+    must NEVER call _send()/send_text_message() - a rep replying to an
+    internal alert must not receive an AI-generated chatbot reply. Also
+    deliberately does not write to `conversations` (customer-transcript
+    data) so rep replies don't pollute the dashboard's per-customer view."""
+    try:
+        mark_as_read(message_id)
+    except WhatsAppError as e:
+        logger.warning("mark_as_read failed: %s", e)
+
+    escalation_attempt_id, lead_id, method = store.resolve_rep_reply_lead(rep_phone, context_id)
+    store.record_rep_reply(rep_phone, text, message_id, context_id, escalation_attempt_id, lead_id, method)
+    logger.info("Recorded rep reply from %s (lead_id=%s, method=%s)", rep_phone, lead_id, method)
 
 
 def _process_text_message(phone: str, text: str, message_id: str):

@@ -127,6 +127,20 @@ def _init_schema():
             CREATE INDEX IF NOT EXISTS idx_leads_phone ON leads (phone);
             CREATE INDEX IF NOT EXISTS idx_leads_status ON leads (status);
             CREATE INDEX IF NOT EXISTS idx_leads_last_activity ON leads (last_activity_at);
+
+            CREATE TABLE IF NOT EXISTS rep_replies (
+                id SERIAL PRIMARY KEY,
+                rep_phone TEXT NOT NULL,
+                reply_text TEXT NOT NULL,
+                whatsapp_message_id TEXT NOT NULL,
+                context_message_id TEXT,
+                escalation_attempt_id INTEGER REFERENCES escalation_attempts(id),
+                lead_id INTEGER REFERENCES leads(id),
+                resolution_method TEXT NOT NULL,   -- 'context_match' | 'fallback_most_recent' | 'unresolved'
+                created_at TIMESTAMPTZ NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_rep_replies_lead ON rep_replies (lead_id);
+            CREATE INDEX IF NOT EXISTS idx_rep_replies_rep_phone ON rep_replies (rep_phone);
             """)
 
             # One-time backfill: group historical escalated messages into
@@ -351,6 +365,85 @@ def mark_lead_followup_sent(lead_id: int):
         _put_conn(conn)
 
 
+def find_rep_matches_for_phone(phone: str) -> bool:
+    """True if we've actually sent this phone number a rep escalation alert
+    before - evidence-based, not sheet-membership-based, so a stale or
+    overlapping rep_phone entry in the sheet can't misroute a real customer's
+    message as a rep reply (see resolve_rep_reply_lead / main.py's routing
+    guard for the full ambiguity-handling logic)."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM escalation_attempts WHERE target_type = 'rep' AND target_phone = %s LIMIT 1",
+                (phone,),
+            )
+            return cur.fetchone() is not None
+    finally:
+        _put_conn(conn)
+
+
+def resolve_rep_reply_lead(rep_phone: str, context_message_id: str | None):
+    """Figures out which lead a rep's WhatsApp reply is about. If they used
+    swipe-to-reply on the exact escalation alert, context_message_id matches
+    a stored escalation_attempts.whatsapp_message_id - an exact match. \
+    Otherwise falls back to their most recent still-open lead, which can be
+    wrong if they were sent two escalations close together (flagged to the
+    caller via resolution_method so the dashboard can label it a best guess).
+    Returns (escalation_attempt_id, lead_id, resolution_method)."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            if context_message_id:
+                cur.execute("""
+                    SELECT ea.id, l.id
+                    FROM escalation_attempts ea
+                    JOIN leads l ON ea.customer_phone = l.phone
+                        AND ea.conversation_id BETWEEN l.first_conversation_id AND l.last_conversation_id
+                    WHERE ea.whatsapp_message_id = %s AND ea.target_type = 'rep' AND ea.target_phone = %s
+                """, (context_message_id, rep_phone))
+                row = cur.fetchone()
+                if row:
+                    return row[0], row[1], "context_match"
+
+            cur.execute("""
+                SELECT l.id
+                FROM escalation_attempts ea
+                JOIN leads l ON ea.customer_phone = l.phone
+                    AND ea.conversation_id BETWEEN l.first_conversation_id AND l.last_conversation_id
+                WHERE ea.target_type = 'rep' AND ea.target_phone = %s AND l.status = 'open'
+                ORDER BY ea.created_at DESC LIMIT 1
+            """, (rep_phone,))
+            row = cur.fetchone()
+            if row:
+                return None, row[0], "fallback_most_recent"
+
+            return None, None, "unresolved"
+    finally:
+        _put_conn(conn)
+
+
+def record_rep_reply(
+    rep_phone: str, reply_text: str, whatsapp_message_id: str, context_message_id: str | None,
+    escalation_attempt_id: int | None, lead_id: int | None, resolution_method: str,
+):
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO rep_replies (
+                    rep_phone, reply_text, whatsapp_message_id, context_message_id,
+                    escalation_attempt_id, lead_id, resolution_method, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                rep_phone, reply_text, whatsapp_message_id, context_message_id,
+                escalation_attempt_id, lead_id, resolution_method, datetime.now(timezone.utc),
+            ))
+        conn.commit()
+    finally:
+        _put_conn(conn)
+
+
 def get_recent_history(phone: str, limit: int = 6):
     """Returns recent messages oldest-first, for conversation context."""
     conn = _get_conn()
@@ -520,7 +613,10 @@ def get_leads_list(start: str = None, end: str = None):
                        l.status,
                        attempts.any_success,
                        attempts.attempt_count,
-                       attempts.attempt_summary
+                       attempts.attempt_summary,
+                       latest_reply.reply_text,
+                       latest_reply.created_at,
+                       latest_reply.resolution_method
                 FROM leads l
                 LEFT JOIN customers cu ON cu.phone = l.phone
                 LEFT JOIN LATERAL (
@@ -532,12 +628,20 @@ def get_leads_list(start: str = None, end: str = None):
                     WHERE ea.conversation_id BETWEEN l.first_conversation_id AND l.last_conversation_id
                       AND ea.customer_phone = l.phone
                 ) attempts ON true
+                LEFT JOIN LATERAL (
+                    SELECT reply_text, created_at, resolution_method
+                    FROM rep_replies rr
+                    WHERE rr.lead_id = l.id
+                    ORDER BY rr.created_at DESC
+                    LIMIT 1
+                ) latest_reply ON true
                 WHERE 1=1
                 {where}
                 ORDER BY l.last_activity_at DESC
             """, params)
             keys = ["created_at", "phone", "company_name", "rep_name", "enquiry_text", "status",
-                     "any_success", "attempt_count", "attempt_summary"]
+                     "any_success", "attempt_count", "attempt_summary",
+                     "rep_reply_text", "rep_reply_at", "rep_reply_method"]
             rows = [dict(zip(keys, row)) for row in cur.fetchall()]
             for row in rows:
                 if not row["attempt_count"]:
