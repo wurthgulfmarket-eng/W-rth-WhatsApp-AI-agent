@@ -90,51 +90,54 @@ def rebuild_kb(token: str, background_tasks: BackgroundTasks):
 
 
 def _send_day1_followups():
-    """Sends an automated nudge to customers whose lead has gone quiet for
-    LEAD_FOLLOWUP_HOURS with no reply from them - see
-    storage.store.get_leads_needing_followup for the exact eligibility
-    criteria. Must use a Meta-approved template (this fires well outside
-    WhatsApp's 24h free-form window by design), so no-ops until one is
-    configured."""
-    if not config.WHATSAPP_FOLLOWUP_TEMPLATE_NAME:
-        logger.info("WHATSAPP_FOLLOWUP_TEMPLATE_NAME not set - skipping day-1 followups")
+    """Sends a reminder to the SALES REP (not the customer - customers
+    shouldn't be pinged twice about the same enquiry) for any lead where
+    they haven't replied to the original escalation at all after
+    LEAD_FOLLOWUP_HOURS - see storage.store.get_leads_needing_followup for
+    the exact eligibility criteria. Any reply from the rep (action taken or
+    not) counts as "handled" and stops reminders for that lead until the
+    next one. Must use a Meta-approved template (a rep who hasn't engaged
+    yet likely hasn't messaged the business number recently either, so this
+    fires outside WhatsApp's 24h free-form window by design), so no-ops
+    until one is configured."""
+    if not config.WHATSAPP_REP_REMINDER_TEMPLATE_NAME:
+        logger.info("WHATSAPP_REP_REMINDER_TEMPLATE_NAME not set - skipping day-1 rep reminders")
         return
 
     leads = store.get_leads_needing_followup()
-    logger.info("Day-1 followup: %d lead(s) eligible", len(leads))
+    logger.info("Day-1 rep reminder: %d lead(s) eligible", len(leads))
 
     for lead in leads:
-        company_or_name = lead["company_name"] or "there"
-        if lead["rep_name"] and lead["rep_phone"]:
-            rep_line = f"Your rep {lead['rep_name']} is available at {lead['rep_phone']}."
-        else:
-            rep_line = "Our team is ready to help."
+        company_or_name = lead["company_name"] or "this customer"
+        rep_first_name = (lead["rep_name"] or "").split(" ")[0] or "there"
 
         components = [{"type": "body", "parameters": [
+            {"type": "text", "text": rep_first_name},
             {"type": "text", "text": company_or_name},
-            {"type": "text", "text": rep_line},
         ]}]
 
         try:
             send_template_message(
-                to_whatsapp_number(lead["phone"]),
-                config.WHATSAPP_FOLLOWUP_TEMPLATE_NAME,
-                config.WHATSAPP_FOLLOWUP_TEMPLATE_LANGUAGE,
+                to_whatsapp_number(lead["rep_phone"]),
+                config.WHATSAPP_REP_REMINDER_TEMPLATE_NAME,
+                config.WHATSAPP_REP_REMINDER_TEMPLATE_LANGUAGE,
                 components,
             )
             store.mark_lead_followup_sent(lead["id"])
-            logger.info("Sent day-1 followup to lead id=%s phone=%s", lead["id"], lead["phone"])
+            logger.info("Sent day-1 rep reminder to lead id=%s rep_phone=%s", lead["id"], lead["rep_phone"])
         except WhatsAppError as e:
             # Leave followup_sent_at NULL so this lead is retried on the
             # next scheduled run instead of being silently dropped.
-            logger.error("Day-1 followup failed for lead id=%s phone=%s: %s", lead["id"], lead["phone"], e)
+            logger.error("Day-1 rep reminder failed for lead id=%s rep_phone=%s: %s", lead["id"], lead["rep_phone"], e)
 
 
-# Sends the day-1 followup to any lead that's gone quiet - see
-# _send_day1_followups. Intended to be called once a day by an external
-# scheduler (this app has no built-in cron; Render's free tier doesn't
-# support Cron Job services), e.g. a GitHub Actions scheduled workflow.
-# Protected the same way as /admin/rebuild-kb.
+# Sends the day-1 rep reminder for any lead the assigned rep hasn't replied
+# to yet - see _send_day1_followups. Route name kept as "send-followups" for
+# backwards compatibility with the already-configured external scheduler.
+# Intended to be called once a day by an external scheduler (this app has no
+# built-in cron; Render's free tier doesn't support Cron Job services), e.g.
+# a GitHub Actions scheduled workflow. Protected the same way as
+# /admin/rebuild-kb.
 @app.post("/admin/send-followups")
 def send_followups(token: str, background_tasks: BackgroundTasks):
     if token != config.WHATSAPP_VERIFY_TOKEN:

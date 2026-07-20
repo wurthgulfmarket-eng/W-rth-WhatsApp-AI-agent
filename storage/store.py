@@ -327,11 +327,13 @@ def get_or_open_lead(phone: str, conversation_id: int) -> int:
 
 
 def get_leads_needing_followup():
-    """Leads that are still open, haven't had a followup sent yet, have
-    been quiet for LEAD_FOLLOWUP_HOURS, and haven't had a new inbound
-    message since - the purely time-based "still needs attention" signal,
-    since reps are contacted on a separate WhatsApp channel entirely and
-    this app has no way to know if a rep actually resolved anything."""
+    """Leads that are still open, have an assigned rep with a phone number,
+    haven't had a reminder sent yet, and - critically - the rep has NOT
+    replied to the original escalation at all (no rep_replies row for this
+    lead). This nudges the REP, not the customer, since customers shouldn't
+    be pinged twice about the same enquiry; a rep's first reply (any reply,
+    action taken or not) is treated as "handled" and stops further
+    reminders for this lead until the next one."""
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -344,10 +346,10 @@ def get_leads_needing_followup():
                 LEFT JOIN customers cu ON cu.phone = l.phone
                 WHERE l.status = 'open'
                   AND l.followup_sent_at IS NULL
+                  AND COALESCE(cu.rep_phone, '') != ''
                   AND l.last_activity_at <= now() - (%s || ' hours')::interval
                   AND NOT EXISTS (
-                      SELECT 1 FROM conversations c
-                      WHERE c.phone = l.phone AND c.direction = 'in' AND c.created_at > l.last_activity_at
+                      SELECT 1 FROM rep_replies rr WHERE rr.lead_id = l.id
                   )
             """, (config.LEAD_FOLLOWUP_HOURS,))
             return [dict(row) for row in cur.fetchall()]

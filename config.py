@@ -54,17 +54,20 @@ class Config:
     # Lead deduplication: escalated messages from the same customer within
     # this many hours of each other collapse into one "lead" on the
     # dashboard, instead of one row per message. Also used as the day-1
-    # followup's "no reply since" cutoff, see LEAD_FOLLOWUP_HOURS below.
+    # reminder's "no rep reply since" cutoff, see LEAD_FOLLOWUP_HOURS below.
     LEAD_DEDUP_WINDOW_HOURS = int(os.getenv("LEAD_DEDUP_WINDOW_HOURS", "36"))
 
-    # Day-1 lead followup: an automated nudge sent to a customer if their
-    # lead is still open (no new message from them) after this many hours.
-    # Must use a Meta-approved template - by definition this fires outside
-    # WhatsApp's 24-hour free-form messaging window. Until the template name
-    # is set (after Meta approves it), the followup step safely no-ops.
+    # Day-1 rep reminder: a nudge sent to the SALES REP (not the customer -
+    # customers shouldn't be pinged twice about the same enquiry) if their
+    # assigned lead is still open and they haven't replied to the original
+    # escalation alert after this many hours. Must use a Meta-approved
+    # template - by definition this fires outside WhatsApp's 24-hour
+    # free-form messaging window, since a rep who hasn't engaged yet likely
+    # hasn't messaged the business number recently either. Until the
+    # template name is set (after Meta approves it), this safely no-ops.
     LEAD_FOLLOWUP_HOURS = int(os.getenv("LEAD_FOLLOWUP_HOURS", "24"))
-    WHATSAPP_FOLLOWUP_TEMPLATE_NAME = os.getenv("WHATSAPP_FOLLOWUP_TEMPLATE_NAME", "")
-    WHATSAPP_FOLLOWUP_TEMPLATE_LANGUAGE = os.getenv("WHATSAPP_FOLLOWUP_TEMPLATE_LANGUAGE", "en")
+    WHATSAPP_REP_REMINDER_TEMPLATE_NAME = os.getenv("WHATSAPP_REP_REMINDER_TEMPLATE_NAME", "")
+    WHATSAPP_REP_REMINDER_TEMPLATE_LANGUAGE = os.getenv("WHATSAPP_REP_REMINDER_TEMPLATE_LANGUAGE", "en")
 
     # Database - Postgres is required for persistence, since Render's free
     # tier web service filesystem is ephemeral and wipes SQLite on every

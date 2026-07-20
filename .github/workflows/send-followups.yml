@@ -1,4 +1,4 @@
-name: Send day-1 lead followups
+name: Send day-1 rep reminders
 
 on:
   schedule:
