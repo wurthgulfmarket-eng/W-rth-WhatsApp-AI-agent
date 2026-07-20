@@ -20,6 +20,7 @@ from privacy_policy import PRIVACY_POLICY_HTML
 from sheets.sheets_client import find_rep_for_company, find_rep_for_phone
 from storage import store
 from utils.phone import is_plausible_phone, to_whatsapp_number
+from utils.whatsapp_text import sanitize_template_param
 from whatsapp.client import send_text_message, send_template_message, mark_as_read, WhatsAppError
 
 logging.basicConfig(level=logging.INFO)
@@ -108,8 +109,8 @@ def _send_day1_followups():
     logger.info("Day-1 rep reminder: %d lead(s) eligible", len(leads))
 
     for lead in leads:
-        company_or_name = lead["company_name"] or "this customer"
-        rep_first_name = (lead["rep_name"] or "").split(" ")[0] or "there"
+        company_or_name = sanitize_template_param(lead["company_name"]) or "this customer"
+        rep_first_name = sanitize_template_param((lead["rep_name"] or "").split(" ")[0]) or "there"
 
         components = [{"type": "body", "parameters": [
             {"type": "text", "parameter_name": "rep_name", "text": rep_first_name},
@@ -442,9 +443,9 @@ def _send_and_record_escalation(
         if template_name:
             message_type = "template"
             components = [{"type": "body", "parameters": [
-                {"type": "text", "parameter_name": "rep_name", "text": target_name or "Würth UAE"},
+                {"type": "text", "parameter_name": "rep_name", "text": sanitize_template_param(target_name or "Würth UAE")},
                 {"type": "text", "parameter_name": "customer_phone", "text": customer_phone},
-                {"type": "text", "parameter_name": "enquiry_text", "text": message_text[:1000]},
+                {"type": "text", "parameter_name": "enquiry_text", "text": sanitize_template_param(message_text)[:1000]},
             ]}]
             resp = send_template_message(normalized_phone, template_name, config.WHATSAPP_ESCALATION_TEMPLATE_LANGUAGE, components)
         else:
