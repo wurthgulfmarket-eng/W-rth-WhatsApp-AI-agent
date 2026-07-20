@@ -89,6 +89,60 @@ def rebuild_kb(token: str, background_tasks: BackgroundTasks):
     return {"status": "rebuild_started"}
 
 
+def _send_day1_followups():
+    """Sends an automated nudge to customers whose lead has gone quiet for
+    LEAD_FOLLOWUP_HOURS with no reply from them - see
+    storage.store.get_leads_needing_followup for the exact eligibility
+    criteria. Must use a Meta-approved template (this fires well outside
+    WhatsApp's 24h free-form window by design), so no-ops until one is
+    configured."""
+    if not config.WHATSAPP_FOLLOWUP_TEMPLATE_NAME:
+        logger.info("WHATSAPP_FOLLOWUP_TEMPLATE_NAME not set - skipping day-1 followups")
+        return
+
+    leads = store.get_leads_needing_followup()
+    logger.info("Day-1 followup: %d lead(s) eligible", len(leads))
+
+    for lead in leads:
+        company_or_name = lead["company_name"] or "there"
+        if lead["rep_name"] and lead["rep_phone"]:
+            rep_line = f"Your rep {lead['rep_name']} is available at {lead['rep_phone']}."
+        else:
+            rep_line = "Our team is ready to help."
+
+        components = [{"type": "body", "parameters": [
+            {"type": "text", "text": company_or_name},
+            {"type": "text", "text": rep_line},
+        ]}]
+
+        try:
+            send_template_message(
+                to_whatsapp_number(lead["phone"]),
+                config.WHATSAPP_FOLLOWUP_TEMPLATE_NAME,
+                config.WHATSAPP_FOLLOWUP_TEMPLATE_LANGUAGE,
+                components,
+            )
+            store.mark_lead_followup_sent(lead["id"])
+            logger.info("Sent day-1 followup to lead id=%s phone=%s", lead["id"], lead["phone"])
+        except WhatsAppError as e:
+            # Leave followup_sent_at NULL so this lead is retried on the
+            # next scheduled run instead of being silently dropped.
+            logger.error("Day-1 followup failed for lead id=%s phone=%s: %s", lead["id"], lead["phone"], e)
+
+
+# Sends the day-1 followup to any lead that's gone quiet - see
+# _send_day1_followups. Intended to be called once a day by an external
+# scheduler (this app has no built-in cron; Render's free tier doesn't
+# support Cron Job services), e.g. a GitHub Actions scheduled workflow.
+# Protected the same way as /admin/rebuild-kb.
+@app.post("/admin/send-followups")
+def send_followups(token: str, background_tasks: BackgroundTasks):
+    if token != config.WHATSAPP_VERIFY_TOKEN:
+        return Response(content="Forbidden", status_code=403)
+    background_tasks.add_task(_send_day1_followups)
+    return {"status": "followups_started"}
+
+
 @app.on_event("startup")
 def _auto_rebuild_kb_if_missing():
     # Render's free tier disk is ephemeral - every deploy/restart wipes data/,
@@ -299,7 +353,8 @@ def handle_customer_message(phone: str, text: str):
 
     conversation_id = _send(phone, reply, escalated=escalate)
 
-    if escalate:
+    if escalate and conversation_id is not None:
+        store.get_or_open_lead(phone, conversation_id)
         _notify_escalation(conversation_id, phone, text, customer)
 
 

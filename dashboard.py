@@ -151,10 +151,10 @@ def export_excel(request: Request, start: str = "", end: str = ""):
         ws4.column_dimensions[col_letter].width = width
 
     ws5 = wb.create_sheet("Lead Details")
-    ws5.append(["Timestamp (UTC)", "Phone", "Company", "Sales Rep", "Customer Enquiry", "Delivery"])
+    ws5.append(["Timestamp (UTC)", "Phone", "Company", "Sales Rep", "Customer Enquiry", "Status", "Delivery"])
     for row in store.get_leads_list(start, end):
-        ws5.append([str(row["created_at"]), row["phone"], row["company_name"], row["rep_name"], row["enquiry_text"], row["delivery_status"]])
-    for col_letter, width in zip("ABCDEF", [26, 16, 24, 20, 60, 14]):
+        ws5.append([str(row["created_at"]), row["phone"], row["company_name"], row["rep_name"], row["enquiry_text"], row["status"], row["delivery_status"]])
+    for col_letter, width in zip("ABCDEFG", [26, 16, 24, 20, 60, 10, 14]):
         ws5.column_dimensions[col_letter].width = width
 
     buf = io.BytesIO()
@@ -180,12 +180,18 @@ def _fmt_ts(ts) -> str:
 
 
 _DELIVERY_PILL_LABELS = {"delivered": "Delivered", "failed": "Failed", "pending": "Pending"}
+_STATUS_PILL_LABELS = {"open": "Open", "closed": "Closed"}
 
 
 def _delivery_pill(status: str, summary: str) -> str:
     label = _DELIVERY_PILL_LABELS.get(status, status)
     title = f' title="{_esc(summary)}"' if summary else ""
     return f'<span class="pill {_esc(status)}"{title}>{label}</span>'
+
+
+def _status_pill(status: str) -> str:
+    label = _STATUS_PILL_LABELS.get(status, status)
+    return f'<span class="pill status-{_esc(status)}">{label}</span>'
 
 
 _BASE_STYLE = """
@@ -258,9 +264,10 @@ def _render_dashboard_html(start, end, stats, daily, customers, leads_summary, l
             <td>{_esc(l['company_name']) or _esc(l['phone'])}</td>
             <td>{_esc(l['rep_name'])}</td>
             <td>{_esc(l['enquiry_text'])}</td>
+            <td>{_status_pill(l['status'])}</td>
             <td>{_delivery_pill(l['delivery_status'], l.get('attempt_summary') or '')}</td>
         </tr>""" for l in leads_list
-    ) or "<tr><td colspan='5' class='muted'>No leads in this range</td></tr>"
+    ) or "<tr><td colspan='6' class='muted'>No leads in this range</td></tr>"
 
     customer_rows = "".join(
         f"""<tr class="{'active' if c['phone'] == selected_phone else ''}">
@@ -326,6 +333,8 @@ def _render_dashboard_html(start, end, stats, daily, customers, leads_summary, l
   .pill.delivered {{ background: #e6f4ea; color: #1a7f37; }}
   .pill.failed {{ background: #fdeaec; color: #c8102e; }}
   .pill.pending {{ background: #f0f0f0; color: #888; }}
+  .pill.status-open {{ background: #e8f0fe; color: #1a56c8; }}
+  .pill.status-closed {{ background: #f0f0f0; color: #888; }}
   .chat-window {{ max-height: 500px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }}
   .bubble {{ max-width: 85%; padding: 8px 12px; border-radius: 10px; font-size: 0.9em; }}
   .bubble.in {{ align-self: flex-start; background: #eee; }}
@@ -384,7 +393,7 @@ request, or an urgent issue, and flagged for the assigned sales rep to follow up
   <div class="panel">
     <h2>Recent leads</h2>
     <table>
-      <tr><th>When</th><th>Customer</th><th>Rep</th><th>Enquiry</th><th>Delivery</th></tr>
+      <tr><th>When</th><th>Customer</th><th>Rep</th><th>Enquiry</th><th>Status</th><th>Delivery</th></tr>
       {leads_list_rows}
     </table>
   </div>

@@ -112,7 +112,56 @@ def _init_schema():
             CREATE INDEX IF NOT EXISTS idx_escalation_attempts_conversation ON escalation_attempts (conversation_id);
             CREATE INDEX IF NOT EXISTS idx_escalation_attempts_phone ON escalation_attempts (customer_phone);
             CREATE INDEX IF NOT EXISTS idx_escalation_attempts_created_at ON escalation_attempts (created_at);
+
+            CREATE TABLE IF NOT EXISTS leads (
+                id SERIAL PRIMARY KEY,
+                phone TEXT NOT NULL,
+                first_conversation_id INTEGER REFERENCES conversations(id),
+                last_conversation_id INTEGER REFERENCES conversations(id),
+                opened_at TIMESTAMPTZ NOT NULL,
+                last_activity_at TIMESTAMPTZ NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                followup_sent_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_leads_phone ON leads (phone);
+            CREATE INDEX IF NOT EXISTS idx_leads_status ON leads (status);
+            CREATE INDEX IF NOT EXISTS idx_leads_last_activity ON leads (last_activity_at);
             """)
+
+            # One-time backfill: group historical escalated messages into
+            # leads using the same rolling-window logic as get_or_open_lead,
+            # so leads created before this table existed still show up
+            # deduplicated instead of leaving `leads` empty for old data.
+            cur.execute("SELECT 1 FROM leads LIMIT 1")
+            if cur.fetchone() is None:
+                cur.execute(f"""
+                    WITH escalated AS (
+                        SELECT id, phone, created_at,
+                               LAG(created_at) OVER (PARTITION BY phone ORDER BY created_at) AS prev_created_at
+                        FROM conversations
+                        WHERE direction = 'out' AND escalated = 1
+                    ),
+                    grouped AS (
+                        SELECT id, phone, created_at,
+                               SUM(CASE
+                                   WHEN prev_created_at IS NULL
+                                        OR created_at - prev_created_at > INTERVAL '{config.LEAD_DEDUP_WINDOW_HOURS} hours'
+                                   THEN 1 ELSE 0
+                               END) OVER (PARTITION BY phone ORDER BY created_at) AS grp
+                        FROM escalated
+                    )
+                    INSERT INTO leads (phone, first_conversation_id, last_conversation_id, opened_at, last_activity_at, status, created_at)
+                    SELECT phone,
+                           MIN(id) AS first_conversation_id,
+                           MAX(id) AS last_conversation_id,
+                           MIN(created_at) AS opened_at,
+                           MAX(created_at) AS last_activity_at,
+                           'closed' AS status,
+                           now() AS created_at
+                    FROM grouped
+                    GROUP BY phone, grp
+                """)
         conn.commit()
     finally:
         _pool.putconn(conn)
@@ -216,6 +265,87 @@ def record_escalation_attempt(
                 message_type, template_name, int(success), whatsapp_message_id, error_detail,
                 datetime.now(timezone.utc),
             ))
+        conn.commit()
+    finally:
+        _put_conn(conn)
+
+
+def get_or_open_lead(phone: str, conversation_id: int) -> int:
+    """Groups escalated messages from the same customer into one 'lead' as
+    long as they keep coming within LEAD_DEDUP_WINDOW_HOURS of the previous
+    one - without this, a single back-and-forth enquiry (e.g. 4 messages in
+    5 minutes) shows up as 4 separate leads on the dashboard instead of 1.
+    A gap longer than the window closes the old lead and starts a new one,
+    e.g. the customer returning days later with an unrelated enquiry."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, last_activity_at FROM leads WHERE phone = %s AND status = 'open' "
+                "ORDER BY id DESC LIMIT 1",
+                (phone,),
+            )
+            row = cur.fetchone()
+            now = datetime.now(timezone.utc)
+
+            if row:
+                lead_id, last_activity_at = row
+                window_expired = (now - last_activity_at).total_seconds() > config.LEAD_DEDUP_WINDOW_HOURS * 3600
+                if not window_expired:
+                    cur.execute(
+                        "UPDATE leads SET last_conversation_id = %s, last_activity_at = %s WHERE id = %s",
+                        (conversation_id, now, lead_id),
+                    )
+                    conn.commit()
+                    return lead_id
+                cur.execute("UPDATE leads SET status = 'closed' WHERE id = %s", (lead_id,))
+
+            cur.execute(
+                "INSERT INTO leads (phone, first_conversation_id, last_conversation_id, opened_at, "
+                "last_activity_at, status, created_at) VALUES (%s, %s, %s, %s, %s, 'open', %s) RETURNING id",
+                (phone, conversation_id, conversation_id, now, now, now),
+            )
+            new_id = cur.fetchone()[0]
+        conn.commit()
+        return new_id
+    finally:
+        _put_conn(conn)
+
+
+def get_leads_needing_followup():
+    """Leads that are still open, haven't had a followup sent yet, have
+    been quiet for LEAD_FOLLOWUP_HOURS, and haven't had a new inbound
+    message since - the purely time-based "still needs attention" signal,
+    since reps are contacted on a separate WhatsApp channel entirely and
+    this app has no way to know if a rep actually resolved anything."""
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT l.id, l.phone, l.last_activity_at,
+                       COALESCE(cu.company_name, '') AS company_name,
+                       COALESCE(cu.rep_name, '') AS rep_name,
+                       COALESCE(cu.rep_phone, '') AS rep_phone
+                FROM leads l
+                LEFT JOIN customers cu ON cu.phone = l.phone
+                WHERE l.status = 'open'
+                  AND l.followup_sent_at IS NULL
+                  AND l.last_activity_at <= now() - (%s || ' hours')::interval
+                  AND NOT EXISTS (
+                      SELECT 1 FROM conversations c
+                      WHERE c.phone = l.phone AND c.direction = 'in' AND c.created_at > l.last_activity_at
+                  )
+            """, (config.LEAD_FOLLOWUP_HOURS,))
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        _put_conn(conn)
+
+
+def mark_lead_followup_sent(lead_id: int):
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE leads SET followup_sent_at = %s WHERE id = %s", (datetime.now(timezone.utc), lead_id))
         conn.commit()
     finally:
         _put_conn(conn)
@@ -325,32 +455,32 @@ def get_conversation(phone: str, start: str = None, end: str = None):
 
 
 def get_leads_summary(start: str = None, end: str = None):
-    """One row per sales rep, counting how many leads (escalated enquiries -
-    purchase intent, quote requests, complaints, etc.) the AI flagged for
-    them in the range, their most recent lead, and how many of those leads'
-    rep-notification attempts failed entirely (a fast signal that a rep's
-    phone number might be wrong). A "lead" is an outbound bot reply marked
-    escalated=1 (see main.py's needs_escalation check) - the escalated flag
-    is only ever set on the bot's reply, not the customer's inbound
-    message, so this counts on direction='out'."""
+    """One row per sales rep, counting how many distinct leads (deduplicated
+    customer enquiries, see get_or_open_lead) were opened for them in the
+    range, how many distinct customers that represents, their most recent
+    lead, and how many of those leads' rep-notification attempts failed
+    entirely (a fast signal that a rep's phone number might be wrong).
+    Counts DISTINCT leads, not raw escalated messages - a customer's 4-message
+    back-and-forth about one enquiry counts once, not 4 times."""
     conn = _get_conn()
     try:
-        where, params = _date_where(start, end)
+        where, params = _date_where(start, end, column="l.opened_at")
         with conn.cursor() as cur:
             cur.execute(f"""
                 SELECT COALESCE(NULLIF(cu.rep_name, ''), 'Unassigned'),
-                       COUNT(*) AS lead_count,
-                       COUNT(DISTINCT c.phone) AS customer_count,
-                       MAX(c.created_at) AS last_lead_at,
-                       COUNT(*) FILTER (WHERE attempts.attempt_count > 0 AND attempts.any_success IS NOT TRUE) AS failed_notifications
-                FROM conversations c
-                LEFT JOIN customers cu ON cu.phone = c.phone
+                       COUNT(DISTINCT l.id) AS lead_count,
+                       COUNT(DISTINCT l.phone) AS customer_count,
+                       MAX(l.last_activity_at) AS last_lead_at,
+                       COUNT(DISTINCT l.id) FILTER (WHERE attempts.attempt_count > 0 AND attempts.any_success IS NOT TRUE) AS failed_notifications
+                FROM leads l
+                LEFT JOIN customers cu ON cu.phone = l.phone
                 LEFT JOIN LATERAL (
                     SELECT BOOL_OR(success = 1) AS any_success, COUNT(*) AS attempt_count
                     FROM escalation_attempts ea
-                    WHERE ea.conversation_id = c.id
+                    WHERE ea.conversation_id BETWEEN l.first_conversation_id AND l.last_conversation_id
+                      AND ea.customer_phone = l.phone
                 ) attempts ON true
-                WHERE c.direction = 'out' AND c.escalated = 1 {where}
+                WHERE 1=1 {where}
                 GROUP BY COALESCE(NULLIF(cu.rep_name, ''), 'Unassigned')
                 ORDER BY lead_count DESC
             """, params)
@@ -361,49 +491,52 @@ def get_leads_summary(start: str = None, end: str = None):
 
 
 def get_leads_list(start: str = None, end: str = None):
-    """Every individual lead in the range, most recent first: the customer's
-    original enquiry (the inbound message immediately preceding the
-    escalated outbound reply), who it was routed to, and delivery_status
-    ("delivered" if any escalation_attempts row succeeded, "failed" if
-    attempts exist but none succeeded, "pending" if no attempt was recorded
-    at all - should be rare once escalation always records an attempt)."""
+    """Every deduplicated lead in the range, most recent activity first: the
+    customer's original enquiry (the inbound message immediately preceding
+    the lead's first escalated reply), who it was routed to, current status
+    (open/closed - purely time-based, see get_or_open_lead), and
+    delivery_status ("delivered" if any escalation_attempts row across the
+    whole lead succeeded, "failed" if attempts exist but none succeeded,
+    "pending" if none were recorded at all)."""
     conn = _get_conn()
     try:
-        where, params = _date_where(start, end, column="out_msg.created_at")
+        where, params = _date_where(start, end, column="l.last_activity_at")
         with conn.cursor() as cur:
             cur.execute(f"""
-                SELECT out_msg.created_at,
-                       out_msg.phone,
+                SELECT l.last_activity_at,
+                       l.phone,
                        COALESCE(cu.company_name, ''),
                        COALESCE(NULLIF(cu.rep_name, ''), 'Unassigned'),
                        COALESCE(
                            (SELECT in_msg.message
                             FROM conversations in_msg
-                            WHERE in_msg.phone = out_msg.phone
+                            WHERE in_msg.phone = l.phone
                               AND in_msg.direction = 'in'
-                              AND in_msg.id < out_msg.id
+                              AND in_msg.id < l.first_conversation_id
                             ORDER BY in_msg.id DESC
                             LIMIT 1),
                            ''
                        ) AS enquiry_text,
+                       l.status,
                        attempts.any_success,
                        attempts.attempt_count,
                        attempts.attempt_summary
-                FROM conversations out_msg
-                LEFT JOIN customers cu ON cu.phone = out_msg.phone
+                FROM leads l
+                LEFT JOIN customers cu ON cu.phone = l.phone
                 LEFT JOIN LATERAL (
                     SELECT
                         BOOL_OR(success = 1) AS any_success,
                         COUNT(*) AS attempt_count,
                         STRING_AGG(DISTINCT target_type || ':' || CASE WHEN success = 1 THEN 'ok' ELSE 'fail' END, ', ') AS attempt_summary
                     FROM escalation_attempts ea
-                    WHERE ea.conversation_id = out_msg.id
+                    WHERE ea.conversation_id BETWEEN l.first_conversation_id AND l.last_conversation_id
+                      AND ea.customer_phone = l.phone
                 ) attempts ON true
-                WHERE out_msg.direction = 'out' AND out_msg.escalated = 1
+                WHERE 1=1
                 {where}
-                ORDER BY out_msg.created_at DESC
+                ORDER BY l.last_activity_at DESC
             """, params)
-            keys = ["created_at", "phone", "company_name", "rep_name", "enquiry_text",
+            keys = ["created_at", "phone", "company_name", "rep_name", "enquiry_text", "status",
                      "any_success", "attempt_count", "attempt_summary"]
             rows = [dict(zip(keys, row)) for row in cur.fetchall()]
             for row in rows:

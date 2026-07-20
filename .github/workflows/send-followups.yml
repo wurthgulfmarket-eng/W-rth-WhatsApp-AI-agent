@@ -1,0 +1,18 @@
+name: Send day-1 lead followups
+
+on:
+  schedule:
+    # 06:00 UTC daily (~10:00 Gulf Standard Time)
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /admin/send-followups
+        env:
+          RENDER_URL: ${{ secrets.RENDER_APP_URL }}
+          TOKEN: ${{ secrets.WHATSAPP_VERIFY_TOKEN }}
+        run: |
+          curl -sf -X POST "${RENDER_URL}/admin/send-followups?token=${TOKEN}"
