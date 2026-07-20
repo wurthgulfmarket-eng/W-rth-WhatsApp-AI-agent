@@ -14,7 +14,7 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import HTMLResponse
 
 from config import config
-from ai.agent import generate_reply, generate_image_reply, try_extract_company_name
+from ai.agent import generate_reply, generate_image_reply, try_extract_company_name, is_auto_reply
 from dashboard import router as dashboard_router
 from privacy_policy import PRIVACY_POLICY_HTML
 from sheets.sheets_client import find_rep_for_company, find_rep_for_phone
@@ -394,6 +394,15 @@ def handle_customer_message(phone: str, text: str):
         reply += "\n\nI've flagged this for your sales representative to follow up personally."
 
     conversation_id = _send(phone, reply, escalated=escalate)
+
+    # Second, independent check right before the (paid) escalation WhatsApp
+    # send actually fires - generate_reply() already filters auto-replies,
+    # but this is cheap insurance against any future code path that sets
+    # escalate=True without going through that check, so a templated
+    # auto-response can never trigger a real send.
+    if escalate and conversation_id is not None and is_auto_reply(text):
+        logger.warning("Suppressing escalation for %s - message looks like an auto-reply template: %r", phone, text[:200])
+        escalate = False
 
     if escalate and conversation_id is not None:
         store.get_or_open_lead(phone, conversation_id)

@@ -45,6 +45,10 @@ ESCALATION_KEYWORDS = [
 # message" / business auto-response), not genuine customer intent - checked
 # before the message ever reaches the AI, so auto-replies can never be
 # tagged as leads regardless of what the model would otherwise decide.
+# English AND Arabic phrasing, since UAE customers commonly have their own
+# WhatsApp Business auto-reply set up in Arabic (a real false-positive: a
+# radiator shop's Arabic "thank you for reaching out, we'll respond soon"
+# auto-reply got escalated as a lead, since the old list was English-only).
 _AUTO_REPLY_SIGNALS = [
     "thank you for connecting with us",
     "thank you for contacting",
@@ -57,12 +61,47 @@ _AUTO_REPLY_SIGNALS = [
     "automated response",
     "auto-reply",
     "autoreply",
+    # Arabic equivalents (see comment above)
+    "شكرا لك على التواصل",  # "thank you for connecting/reaching out"
+    "شكرا للتواصل",
+    "نشكرك على تواصلك",
+    "سوف نقوم بالرد",  # "we will respond"
+    "سنقوم بالرد عليك",
+    "بأسرع وقت ممكن",  # "as soon as possible" (paired with a reply promise)
+    "حاليا في اجازة",  # "currently on vacation"
+    "رد تلقائي",  # "automatic reply"
 ]
+
+# Structural signals that a message is a WhatsApp Business "away message" /
+# auto-responder template, independent of language - these templates are
+# typically multi-line with several emoji-prefixed bullet points (hours,
+# location, social links) and don't read like a real person typing on their
+# phone. Language-specific phrase lists (_AUTO_REPLY_SIGNALS above) miss
+# any language they don't explicitly cover; this catches the shape instead.
+_EMOJI_BULLET_RE = re.compile(
+    r"[\U0001F300-\U0001FAFF☀-➿\U0001F000-\U0001F0FF]"  # common emoji ranges
+)
+_WORKING_HOURS_RE = re.compile(r"\b\d{1,2}:\d{2}\s*(am|pm)?\s*(to|-|–)\s*\d{1,2}:\d{2}\s*(am|pm)?", re.IGNORECASE)
+
+
+def _looks_like_auto_reply_template(message: str) -> bool:
+    lines = [ln for ln in message.split("\n") if ln.strip()]
+    if len(lines) < 3:
+        return False
+    emoji_lines = sum(1 for ln in lines if _EMOJI_BULLET_RE.search(ln))
+    has_working_hours = bool(_WORKING_HOURS_RE.search(message))
+    has_url = "http://" in message or "https://" in message or "maps.app.goo.gl" in message
+    # Multiple emoji-led lines plus either working hours or a link is the
+    # hallmark of a WhatsApp Business auto-reply template, not a real typed
+    # message - a genuine customer enquiry essentially never has this shape.
+    return emoji_lines >= 2 and (has_working_hours or has_url)
 
 
 def is_auto_reply(message: str) -> bool:
     lowered = message.lower()
-    return any(signal in lowered for signal in _AUTO_REPLY_SIGNALS)
+    if any(signal in lowered for signal in _AUTO_REPLY_SIGNALS):
+        return True
+    return _looks_like_auto_reply_template(message)
 
 # The model appends one of these tags at the very end of its reply so we can
 # reliably detect lead intent - keyword matching alone missed cases like
