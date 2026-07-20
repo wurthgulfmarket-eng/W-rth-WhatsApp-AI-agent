@@ -177,6 +177,24 @@ def _init_schema():
                     GROUP BY phone, grp
                 """)
         conn.commit()
+
+        # One-time backfill: normalize any customers.rep_phone values stored
+        # before to_whatsapp_number() added UAE country-code handling for
+        # local-format numbers (e.g. "0501234567"). Without this, a rep's
+        # phone on file stays in a format that never matches WhatsApp's own
+        # "from" field, so their reply to an escalation silently gets
+        # treated as an ordinary customer message instead of being
+        # recognized as the rep - a real incident this fixes retroactively
+        # for rows already in the database, not just new sheet loads.
+        from utils.phone import to_whatsapp_number
+        with conn.cursor() as cur:
+            cur.execute("SELECT phone, rep_phone FROM customers WHERE rep_phone IS NOT NULL AND rep_phone != ''")
+            rows = cur.fetchall()
+            for phone, rep_phone in rows:
+                normalized = to_whatsapp_number(rep_phone)
+                if normalized != rep_phone:
+                    cur.execute("UPDATE customers SET rep_phone = %s WHERE phone = %s", (normalized, phone))
+        conn.commit()
     finally:
         _pool.putconn(conn)
 
@@ -653,6 +671,31 @@ def get_leads_list(start: str = None, end: str = None):
                 else:
                     row["delivery_status"] = "failed"
             return rows
+    finally:
+        _put_conn(conn)
+
+
+def get_rep_replies_list(start: str = None, end: str = None):
+    """Every captured rep reply in the range, most recent first, joined
+    back to the lead/customer it was resolved against - a dedicated view of
+    rep engagement, separate from the main leads table (which shows only
+    the latest reply per lead, not the full reply history)."""
+    conn = _get_conn()
+    try:
+        where, params = _date_where(start, end, column="rr.created_at")
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(f"""
+                SELECT rr.created_at, rr.rep_phone, rr.reply_text, rr.resolution_method,
+                       l.id AS lead_id, l.phone AS customer_phone,
+                       COALESCE(cu.company_name, '') AS company_name,
+                       COALESCE(cu.rep_name, '') AS rep_name
+                FROM rep_replies rr
+                LEFT JOIN leads l ON l.id = rr.lead_id
+                LEFT JOIN customers cu ON cu.phone = l.phone
+                WHERE 1=1 {where}
+                ORDER BY rr.created_at DESC
+            """, params)
+            return [dict(row) for row in cur.fetchall()]
     finally:
         _put_conn(conn)
 

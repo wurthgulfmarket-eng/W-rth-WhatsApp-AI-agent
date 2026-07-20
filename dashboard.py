@@ -97,10 +97,11 @@ def dashboard_page(request: Request, start: str = "", end: str = "", phone: str 
     customers = store.get_customers_summary(start, end)
     leads_summary = store.get_leads_summary(start, end)
     leads_list = store.get_leads_list(start, end)
+    rep_replies = store.get_rep_replies_list(start, end)
     transcript = store.get_conversation(phone, start, end) if phone else None
 
     return HTMLResponse(_render_dashboard_html(
-        start, end, stats, daily, customers, leads_summary, leads_list, phone, transcript
+        start, end, stats, daily, customers, leads_summary, leads_list, rep_replies, phone, transcript
     ))
 
 
@@ -160,6 +161,17 @@ def export_excel(request: Request, start: str = "", end: str = ""):
         ])
     for col_letter, width in zip("ABCDEFGHI", [26, 16, 24, 20, 60, 10, 14, 40, 16]):
         ws5.column_dimensions[col_letter].width = width
+
+    ws6 = wb.create_sheet("Rep Replies")
+    ws6.append(["Timestamp (UTC)", "Rep", "Rep Phone", "Customer", "Customer Phone", "Reply", "Match Confidence"])
+    _CONFIDENCE_LABELS_XLSX = {"context_match": "Confirmed", "fallback_most_recent": "Best guess", "unresolved": "Unresolved"}
+    for row in store.get_rep_replies_list(start, end):
+        ws6.append([
+            str(row["created_at"]), row["rep_name"], row["rep_phone"], row["company_name"], row["customer_phone"],
+            row["reply_text"], _CONFIDENCE_LABELS_XLSX.get(row["resolution_method"], row["resolution_method"]),
+        ])
+    for col_letter, width in zip("ABCDEFG", [26, 20, 16, 24, 16, 60, 16]):
+        ws6.column_dimensions[col_letter].width = width
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -253,7 +265,7 @@ def _render_login_html(error: str = "") -> str:
 </html>"""
 
 
-def _render_dashboard_html(start, end, stats, daily, customers, leads_summary, leads_list, selected_phone, transcript):
+def _render_dashboard_html(start, end, stats, daily, customers, leads_summary, leads_list, rep_replies, selected_phone, transcript):
     daily_rows = "".join(
         f"<tr><td>{d['day']}</td><td>{d['received']}</td><td>{d['sent']}</td></tr>" for d in daily
     ) or "<tr><td colspan='3' class='muted'>No data in this range</td></tr>"
@@ -281,6 +293,17 @@ def _render_dashboard_html(start, end, stats, daily, customers, leads_summary, l
             <td>{_rep_reply_cell(l.get('rep_reply_text'), l.get('rep_reply_at'), l.get('rep_reply_method'))}</td>
         </tr>""" for l in leads_list
     ) or "<tr><td colspan='7' class='muted'>No leads in this range</td></tr>"
+
+    _CONFIDENCE_LABELS = {"context_match": "Confirmed", "fallback_most_recent": "Best guess", "unresolved": "Unresolved"}
+    rep_replies_rows = "".join(
+        f"""<tr>
+            <td>{_fmt_ts(r['created_at'])}</td>
+            <td>{_esc(r['rep_name']) or _esc(r['rep_phone'])}</td>
+            <td>{_esc(r['company_name']) or _esc(r['customer_phone']) or '<span class="muted">-</span>'}</td>
+            <td>{_esc(r['reply_text'])}</td>
+            <td>{_esc(_CONFIDENCE_LABELS.get(r['resolution_method'], r['resolution_method']))}</td>
+        </tr>""" for r in rep_replies
+    ) or "<tr><td colspan='5' class='muted'>No rep replies in this range</td></tr>"
 
     customer_rows = "".join(
         f"""<tr class="{'active' if c['phone'] == selected_phone else ''}">
@@ -409,6 +432,16 @@ request, or an urgent issue, and flagged for the assigned sales rep to follow up
     <table>
       <tr><th>When</th><th>Customer</th><th>Rep</th><th>Enquiry</th><th>Status</th><th>Delivery</th><th>Rep Response</th></tr>
       {leads_list_rows}
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Rep replies ({len(rep_replies)})</h2>
+    <p class="muted" style="margin-top:-4px">Every reply a sales rep sent back after being notified of a lead, in order - a dedicated \
+view of rep engagement separate from the leads table above (which only shows the latest reply per lead).</p>
+    <table>
+      <tr><th>When</th><th>Rep</th><th>Customer</th><th>Reply</th><th>Match confidence</th></tr>
+      {rep_replies_rows}
     </table>
   </div>
 

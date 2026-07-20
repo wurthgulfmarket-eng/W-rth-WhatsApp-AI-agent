@@ -260,15 +260,36 @@ _NON_COMPANY_PHRASES = {
     "how are you", "how r u", "hru", "test", "testing",
 }
 
+# Non-committal/deferring replies that are NOT a company name even though
+# they're multi-word - a customer saying "I'll check" or "give me a sec" is
+# stalling, not answering, but the bare multi-word heuristic below would
+# otherwise happily accept them as a candidate company name (real bug: "Ill
+# check" and "With her" both got stored as a customer's company name).
+# Matched as a whole-message pattern, not a substring, so it doesn't
+# accidentally reject a real company name that happens to contain one of
+# these words.
+_DEFERRING_REPLY_PATTERNS = [
+    r"^i'?ll check$", r"^i'?ll ask$", r"^i'?ll (find out|see|let you know)$",
+    r"^(let me|gonna|going to) (check|ask|see|find out)$",
+    r"^(not sure|don'?t know|dont know|no idea)$",
+    r"^(give me|gimme) (a )?(sec|second|moment|minute|min)s?$",
+    r"^(hold on|hang on)( (a )?(sec|second|moment|minute|min)s?)?$",
+    r"^(one|a) (sec|second|moment|minute|min)s?$",
+    r"^with (him|her|them|my \w+)$",
+    r"^(later|maybe|perhaps|soon)$",
+]
+_DEFERRING_REPLY_RE = re.compile("|".join(_DEFERRING_REPLY_PATTERNS), re.IGNORECASE)
+
 
 def try_extract_company_name(message: str) -> str | None:
     """
     Very light heuristic for when we ask 'which company are you from?' and the
     customer replies with just a name. Strips common filler phrases and
-    rejects casual greetings/one-word chit-chat that isn't actually a company
-    name (see _NON_COMPANY_PHRASES) - those must never reach the fuzzy
-    matcher, since a short/generic string can spuriously score above the
-    match threshold against an unrelated real company in the sheet.
+    rejects casual greetings/one-word chit-chat and non-committal/deferring
+    replies that aren't actually a company name (see _NON_COMPANY_PHRASES /
+    _DEFERRING_REPLY_RE) - those must never reach the fuzzy matcher, since a
+    short/generic string can spuriously score above the match threshold
+    against an unrelated real company in the sheet.
     For more robust extraction, replace this with an OpenRouter call that
     returns structured JSON.
     """
@@ -277,6 +298,8 @@ def try_extract_company_name(message: str) -> str | None:
     text = text.strip(" .!?")
 
     if text.lower() in _NON_COMPANY_PHRASES:
+        return None
+    if _DEFERRING_REPLY_RE.match(text.strip()):
         return None
     # A bare word with no company-like signal (letters only, no digits, no
     # multi-word structure, very short) is far more likely to be chit-chat

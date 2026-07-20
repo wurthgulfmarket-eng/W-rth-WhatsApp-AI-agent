@@ -21,7 +21,6 @@ Setup:
 4. Put the sheet's ID (from its URL) into GOOGLE_SHEET_ID in .env.
 """
 import logging
-import re
 import threading
 import time
 
@@ -30,7 +29,7 @@ from google.oauth2.service_account import Credentials
 from rapidfuzz import fuzz, process
 
 from config import config
-from utils.phone import is_plausible_phone
+from utils.phone import is_plausible_phone, to_whatsapp_number
 
 logger = logging.getLogger("wurth-agent.sheets")
 
@@ -51,13 +50,12 @@ def _normalize_key(header: str) -> str:
 
 
 def _normalize_phone(phone: str) -> str:
-    """Strips everything except digits, and a leading country-code '00' or
-    '+' is left as digits - so '+971 50 123 4567', '971501234567', and
-    '00971501234567' all normalize comparably once leading zeros/00 are
-    trimmed from the front."""
-    digits = re.sub(r"\D", "", phone or "")
-    digits = digits.lstrip("0")  # trims a leading 00 (intl dialing prefix) too
-    return digits
+    """Delegates to utils.phone.to_whatsapp_number so Company Phone matching
+    uses the same UAE-country-code-aware normalization as rep_phone (see
+    _load_rows) - a local-format number like '0501234567' now correctly
+    becomes '971501234567' instead of just '501234567', matching what
+    WhatsApp itself reports as the sender."""
+    return to_whatsapp_number(phone)
 
 
 def _load_rows(force: bool = False):
@@ -73,11 +71,20 @@ def _load_rows(force: bool = False):
         rows = []
         for r in records:
             normalized = {_normalize_key(k): v for k, v in r.items()}
+            raw_rep_phone = str(normalized.get("rep_phone", "")).strip()
             row = {
                 "company_name": str(normalized.get("company_name", "")).strip(),
                 "company_phone": str(normalized.get("company_phone", "")).strip(),
                 "rep_name": str(normalized.get("sales_rep_name", "")).strip(),
-                "rep_phone": str(normalized.get("rep_phone", "")).strip(),
+                # Normalized to full international format (UAE country code
+                # added for local-format numbers) here at the source, so
+                # every downstream consumer (customers.rep_phone,
+                # escalation_attempts.target_phone, rep-reply detection)
+                # consistently uses the same digit string WhatsApp itself
+                # reports as the sender - a mismatch here previously caused
+                # a rep replying to an escalation to be treated as an
+                # ordinary customer instead of being recognized as the rep.
+                "rep_phone": to_whatsapp_number(raw_rep_phone) if raw_rep_phone else "",
                 "rep_email": str(normalized.get("rep_email", "")).strip(),
                 "region": str(normalized.get("region", "")).strip(),
             }
