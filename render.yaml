@@ -26,6 +26,10 @@ services:
         value: qwen/qwen2.5-vl-32b-instruct:free
       - key: OPENROUTER_VISION_FALLBACK_MODELS
         value: "meta-llama/llama-3.2-11b-vision-instruct:free,google/gemini-2.0-flash-exp:free"
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_TRANSCRIPTION_MODEL
+        value: whisper-large-v3-turbo
       - key: GOOGLE_SHEET_ID
         sync: false
       - key: GOOGLE_SERVICE_ACCOUNT_FILE

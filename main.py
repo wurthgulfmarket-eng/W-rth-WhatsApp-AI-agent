@@ -240,7 +240,8 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
         )
 
     elif msg_type == "audio":
-        background_tasks.add_task(_process_audio_message, from_number, message_id)
+        audio = message.get("audio", {})
+        background_tasks.add_task(_process_audio_message, from_number, audio.get("id"), message_id)
 
     else:
         logger.info("Ignoring unsupported message type '%s' from %s", msg_type, from_number)
@@ -283,18 +284,48 @@ def _process_text_message(phone: str, text: str, message_id: str):
         )
 
 
-def _process_audio_message(phone: str, message_id: str):
+def _process_audio_message(phone: str, media_id: str, message_id: str):
     try:
         mark_as_read(message_id)
     except WhatsAppError as e:
         logger.warning("mark_as_read failed: %s", e)
 
-    store.log_message(phone, "in", "[voice note]")
-    _send(
-        phone,
-        "Thanks for the voice note! I can't listen to audio yet - could you please type your question, "
-        "or send a photo of the product instead? You can also call us at +971 800 98784.",
-    )
+    if not config.GROQ_API_KEY:
+        # No transcription configured - keep the old, honest behavior
+        # instead of silently dropping the voice note.
+        store.log_message(phone, "in", "[voice note]")
+        _send(
+            phone,
+            "Thanks for the voice note! I can't listen to audio yet - could you please type your question, "
+            "or send a photo of the product instead? You can also call us at +971 800 98784.",
+        )
+        return
+
+    if not media_id:
+        store.log_message(phone, "in", "[voice note]")
+        _send(phone, "Sorry, I couldn't receive that voice note. Could you try sending it again?")
+        return
+
+    try:
+        from whatsapp.client import download_media
+        from ai.transcription_client import transcribe_audio
+
+        audio_bytes = download_media(media_id)
+        transcript = transcribe_audio(audio_bytes)
+        logger.info("Transcribed voice note from %s: %r", phone, transcript)
+
+        # Prefix so the transcript view shows this originated as a voice
+        # note, while the substantive text still flows through the normal
+        # AI reply / lead-detection pipeline exactly like a typed message.
+        handle_customer_message(phone, f"[voice note] {transcript}")
+    except Exception:
+        logger.exception("Failed to transcribe/handle voice note from %s", phone)
+        store.log_message(phone, "in", "[voice note - transcription failed]")
+        _send(
+            phone,
+            "Sorry, I had trouble understanding that voice note. Could you please type your question, "
+            "or contact Würth UAE customer service at +971 800 98784?",
+        )
 
 
 def _process_image_message(phone: str, media_id: str, mime_type: str, caption: str, message_id: str):

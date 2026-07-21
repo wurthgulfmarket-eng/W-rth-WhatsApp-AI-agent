@@ -49,6 +49,14 @@ class Config:
     ))
     OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
+    # Groq (voice note transcription) - OpenRouter's chat models don't do
+    # audio transcription, so voice notes need a dedicated speech-to-text
+    # step before the transcribed text can go through the normal reply/
+    # lead-detection pipeline. Until GROQ_API_KEY is set, voice notes fall
+    # back to the old "please type your question instead" reply.
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+    GROQ_TRANSCRIPTION_MODEL = os.getenv("GROQ_TRANSCRIPTION_MODEL", "whisper-large-v3-turbo")
+
     # Google Sheets
     GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "")
     GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "./credentials/service_account.json")
