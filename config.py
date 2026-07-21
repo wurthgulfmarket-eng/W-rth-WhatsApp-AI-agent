@@ -34,9 +34,19 @@ class Config:
         "OPENROUTER_FALLBACK_MODELS",
         "google/gemma-4-26b-a4b-it:free,meta-llama/llama-3.3-70b-instruct:free",
     ))
-    # Used only for image messages - must be a vision/multimodal-capable model.
-    # Defaults to the same model; override if OPENROUTER_MODEL doesn't support images.
-    OPENROUTER_VISION_MODEL = os.getenv("OPENROUTER_VISION_MODEL", OPENROUTER_MODEL)
+    # Used only for image messages - must be a vision/multimodal-capable
+    # model. Previously defaulted to OPENROUTER_MODEL, which is text-only
+    # (nemotron) in production - every image a customer sent silently failed
+    # since the model can't see images at all, always hitting the generic
+    # "having trouble looking at that image" fallback. Defaults to a real
+    # free vision-capable model instead, with its own fallback chain
+    # (text-only fallback models can't handle vision input, so this must
+    # stay separate from OPENROUTER_FALLBACK_MODELS).
+    OPENROUTER_VISION_MODEL = os.getenv("OPENROUTER_VISION_MODEL", "qwen/qwen2.5-vl-32b-instruct:free")
+    OPENROUTER_VISION_FALLBACK_MODELS = _split_csv(os.getenv(
+        "OPENROUTER_VISION_FALLBACK_MODELS",
+        "meta-llama/llama-3.2-11b-vision-instruct:free,google/gemini-2.0-flash-exp:free",
+    ))
     OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
     # Google Sheets

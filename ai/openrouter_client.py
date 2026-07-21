@@ -24,20 +24,26 @@ _MAX_ATTEMPTS = 3
 _BACKOFF_BASE_SEC = 1.5
 
 
-def chat_completion(messages, temperature: float = 0.3, max_tokens: int = 600, model: str = None) -> str:
+def chat_completion(messages, temperature: float = 0.3, max_tokens: int = 600, model: str = None,
+                     fallback_models: list = None) -> str:
     """Tries `model` (or config.OPENROUTER_MODEL if not given) first, with
     retries on transient errors; if it's still failing after retries - e.g.
     the underlying provider is at capacity, not just a momentary blip -
-    falls through to config.OPENROUTER_FALLBACK_MODELS in order, so one
-    free-tier provider being saturated doesn't fail every reply. Only
-    applies the fallback chain when the caller didn't request a specific
-    model explicitly for a reason other than the default (image replies
-    pass their own vision model and should not silently fall back to a
-    non-vision-capable model)."""
+    falls through to `fallback_models` in order (defaults to
+    config.OPENROUTER_FALLBACK_MODELS when `model` isn't overridden), so one
+    free-tier provider being saturated doesn't fail every reply. Callers
+    that pass an explicit `model` for a reason OTHER than the default (e.g.
+    a vision-capable model for image replies) must also pass their own
+    `fallback_models` list of equally-capable alternatives - text-only
+    fallback models can't handle vision input, so the two chains must never
+    mix."""
     if not config.OPENROUTER_API_KEY:
         raise OpenRouterError("OPENROUTER_API_KEY is not set in .env")
 
-    candidates = [model] if model else [config.OPENROUTER_MODEL, *config.OPENROUTER_FALLBACK_MODELS]
+    if model:
+        candidates = [model, *(fallback_models or [])]
+    else:
+        candidates = [config.OPENROUTER_MODEL, *config.OPENROUTER_FALLBACK_MODELS]
 
     last_error = None
     for candidate_model in candidates:

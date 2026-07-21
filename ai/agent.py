@@ -285,7 +285,8 @@ def generate_image_reply(image_bytes: bytes, mime_type: str, rep: dict | None, c
         {"role": "user", "content": user_content},
     ]
 
-    return chat_completion(messages, model=config.OPENROUTER_VISION_MODEL)
+    return chat_completion(messages, model=config.OPENROUTER_VISION_MODEL,
+                            fallback_models=config.OPENROUTER_VISION_FALLBACK_MODELS)
 
 
 # Casual greetings/filler that must never be treated as a candidate company
