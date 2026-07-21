@@ -83,14 +83,18 @@ def logout():
     return resp
 
 
+_TRANSCRIPT_PAGE_SIZE = 20
+
+
 @router.get("/dashboard", response_class=HTMLResponse)
-def dashboard_page(request: Request, start: str = "", end: str = "", phone: str = "", rep_phone: str = ""):
+def dashboard_page(request: Request, start: str = "", end: str = "", phone: str = "", rep_phone: str = "", page: int = 1):
     if not _is_logged_in(request):
         return RedirectResponse(url="/dashboard/login", status_code=303)
 
     default_start, default_end = _default_date_range()
     start = start or default_start
     end = end or default_end
+    page = max(page, 1)
 
     stats = store.get_stats(start, end)
     daily = store.get_daily_counts(start, end)
@@ -99,12 +103,15 @@ def dashboard_page(request: Request, start: str = "", end: str = "", phone: str 
     leads_list = store.get_leads_list(start, end)
     rep_replies = store.get_rep_replies_list(start, end)
     reps = store.get_reps_summary(start, end)
-    transcript = store.get_conversation(phone, start, end) if phone else None
+    if phone:
+        transcript, transcript_total = store.get_conversation(phone, start, end, page=page, page_size=_TRANSCRIPT_PAGE_SIZE)
+    else:
+        transcript, transcript_total = None, 0
     rep_transcript = store.get_rep_transcript(rep_phone, start, end) if rep_phone else None
 
     return HTMLResponse(_render_dashboard_html(
         start, end, stats, daily, customers, leads_summary, leads_list, rep_replies, reps,
-        phone, transcript, rep_phone, rep_transcript,
+        phone, transcript, transcript_total, page, rep_phone, rep_transcript,
     ))
 
 
@@ -277,8 +284,21 @@ def _render_login_html(error: str = "") -> str:
 </html>"""
 
 
+def _render_pagination(start, end, phone, current_page, total_pages) -> str:
+    if total_pages <= 1:
+        return ""
+    links = []
+    for p in range(1, total_pages + 1):
+        if p == current_page:
+            links.append(f'<span class="page-num active">{p}</span>')
+        else:
+            links.append(f'<a class="page-num" href="?start={start}&end={end}&phone={phone}&page={p}">{p}</a>')
+    return f'<div class="pagination">{"".join(links)}</div>'
+
+
 def _render_dashboard_html(start, end, stats, daily, customers, leads_summary, leads_list, rep_replies, reps,
-                            selected_phone, transcript, selected_rep_phone, rep_transcript):
+                            selected_phone, transcript, transcript_total, transcript_page,
+                            selected_rep_phone, rep_transcript):
     daily_rows = "".join(
         f"<tr><td>{d['day']}</td><td>{d['received']}</td><td>{d['sent']}</td></tr>" for d in daily
     ) or "<tr><td colspan='3' class='muted'>No data in this range</td></tr>"
@@ -347,10 +367,13 @@ def _render_dashboard_html(start, end, stats, daily, customers, leads_summary, l
             )
         else:
             bubbles = "<p class='muted'>No messages for this customer in the selected date range.</p>"
+        total_pages = max((transcript_total + _TRANSCRIPT_PAGE_SIZE - 1) // _TRANSCRIPT_PAGE_SIZE, 1)
+        pagination_html = _render_pagination(start, end, selected_phone, transcript_page, total_pages)
         transcript_html = f"""
         <div class="panel">
-            <h2>Transcript &middot; {_esc(selected_phone)}</h2>
+            <h2>Transcript &middot; {_esc(selected_phone)} <span class="muted" style="font-weight:normal">({transcript_total} messages)</span></h2>
             <div class="chat-window">{bubbles}</div>
+            {pagination_html}
         </div>"""
     else:
         transcript_html = """
@@ -423,6 +446,10 @@ def _render_dashboard_html(start, end, stats, daily, customers, leads_summary, l
   .bubble.escalated {{ border: 1px solid #c8102e; }}
   .bubble-text {{ white-space: pre-wrap; word-break: break-word; }}
   .bubble-time {{ font-size: 0.7em; color: #888; margin-top: 4px; }}
+  .pagination {{ display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px; border-top: 1px solid #eee; }}
+  .page-num {{ display: inline-block; min-width: 26px; text-align: center; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; text-decoration: none; color: #333; background: #f0f0f0; }}
+  .page-num:hover {{ background: #e2e2e2; }}
+  .page-num.active {{ background: #c8102e; color: white; font-weight: 600; }}
   @media (max-width: 600px) {{
     header h1 {{ font-size: 1em; }}
     .filters {{ flex-direction: column; align-items: stretch; }}

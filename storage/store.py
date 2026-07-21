@@ -549,20 +549,32 @@ def get_customers_summary(start: str = None, end: str = None):
         _put_conn(conn)
 
 
-def get_conversation(phone: str, start: str = None, end: str = None):
-    """Full transcript for one customer, oldest first."""
+def get_conversation(phone: str, start: str = None, end: str = None, page: int = 1, page_size: int = 20):
+    """One page of a customer's transcript, most recent messages first on
+    page 1 (so the latest 20 are immediately visible without scrolling a
+    long history), returned in oldest-first chronological order for
+    display within that page - matches normal chat reading order. Also
+    returns the total message count so the caller can render page-number
+    pagination."""
     conn = _get_conn()
     try:
         where, params = _date_where(start, end)
         with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM conversations WHERE phone = %s {where}", (phone, *params))
+            total = cur.fetchone()[0]
+
+            offset = max(page - 1, 0) * page_size
             cur.execute(f"""
                 SELECT direction, message, escalated, created_at
                 FROM conversations
                 WHERE phone = %s {where}
-                ORDER BY id ASC
-            """, (phone, *params))
+                ORDER BY id DESC
+                LIMIT %s OFFSET %s
+            """, (phone, *params, page_size, offset))
             keys = ["direction", "message", "escalated", "created_at"]
-            return [dict(zip(keys, row)) for row in cur.fetchall()]
+            rows = [dict(zip(keys, row)) for row in cur.fetchall()]
+            rows.reverse()
+            return rows, total
     finally:
         _put_conn(conn)
 
