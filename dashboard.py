@@ -84,10 +84,12 @@ def logout():
 
 
 _TRANSCRIPT_PAGE_SIZE = 20
+_CUSTOMERS_PAGE_SIZE = 20
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
-def dashboard_page(request: Request, start: str = "", end: str = "", phone: str = "", rep_phone: str = "", page: int = 1):
+def dashboard_page(request: Request, start: str = "", end: str = "", phone: str = "", rep_phone: str = "",
+                    page: int = 1, cpage: int = 1):
     if not _is_logged_in(request):
         return RedirectResponse(url="/dashboard/login", status_code=303)
 
@@ -95,10 +97,11 @@ def dashboard_page(request: Request, start: str = "", end: str = "", phone: str 
     start = start or default_start
     end = end or default_end
     page = max(page, 1)
+    cpage = max(cpage, 1)
 
     stats = store.get_stats(start, end)
     daily = store.get_daily_counts(start, end)
-    customers = store.get_customers_summary(start, end)
+    customers, customers_total = store.get_customers_summary(start, end, page=cpage, page_size=_CUSTOMERS_PAGE_SIZE)
     leads_summary = store.get_leads_summary(start, end)
     leads_list = store.get_leads_list(start, end)
     rep_replies = store.get_rep_replies_list(start, end)
@@ -110,7 +113,7 @@ def dashboard_page(request: Request, start: str = "", end: str = "", phone: str 
     rep_transcript = store.get_rep_transcript(rep_phone, start, end) if rep_phone else None
 
     return HTMLResponse(_render_dashboard_html(
-        start, end, stats, daily, customers, leads_summary, leads_list, rep_replies, reps,
+        start, end, stats, daily, customers, customers_total, cpage, leads_summary, leads_list, rep_replies, reps,
         phone, transcript, transcript_total, page, rep_phone, rep_transcript,
     ))
 
@@ -142,7 +145,8 @@ def export_excel(request: Request, start: str = "", end: str = ""):
 
     ws2 = wb.create_sheet("Customers")
     ws2.append(["Phone", "Company", "Sales Rep", "Message Count", "Last Message (UTC)"])
-    for row in store.get_customers_summary(start, end):
+    all_customers, _ = store.get_customers_summary(start, end)  # page_size=None -> every customer, not just one dashboard page
+    for row in all_customers:
         ws2.append([row["phone"], row["company_name"], row["rep_name"], row["message_count"], str(row["last_message_at"])])
     for col_letter, width in zip("ABCDE", [16, 24, 20, 14, 26]):
         ws2.column_dimensions[col_letter].width = width
@@ -284,19 +288,26 @@ def _render_login_html(error: str = "") -> str:
 </html>"""
 
 
-def _render_pagination(start, end, phone, current_page, total_pages) -> str:
+def _render_pagination(base_params: dict, page_param: str, current_page: int, total_pages: int) -> str:
+    """base_params are the OTHER query params to preserve on each page link
+    (start/end and, for the transcript, which phone is selected) - page_param
+    is which page-number param this particular pagination control updates
+    (e.g. "page" for the customer transcript, "cpage" for the customers
+    list), so the two pagination controls on the same page don't collide."""
     if total_pages <= 1:
         return ""
+    query_prefix = "&".join(f"{k}={v}" for k, v in base_params.items())
     links = []
     for p in range(1, total_pages + 1):
         if p == current_page:
             links.append(f'<span class="page-num active">{p}</span>')
         else:
-            links.append(f'<a class="page-num" href="?start={start}&end={end}&phone={phone}&page={p}">{p}</a>')
+            links.append(f'<a class="page-num" href="?{query_prefix}&{page_param}={p}">{p}</a>')
     return f'<div class="pagination">{"".join(links)}</div>'
 
 
-def _render_dashboard_html(start, end, stats, daily, customers, leads_summary, leads_list, rep_replies, reps,
+def _render_dashboard_html(start, end, stats, daily, customers, customers_total, customers_page,
+                            leads_summary, leads_list, rep_replies, reps,
                             selected_phone, transcript, transcript_total, transcript_page,
                             selected_rep_phone, rep_transcript):
     daily_rows = "".join(
@@ -348,6 +359,14 @@ def _render_dashboard_html(start, end, stats, daily, customers, leads_summary, l
         </tr>""" for c in customers
     ) or "<tr><td colspan='5' class='muted'>No customers in this range</td></tr>"
 
+    customers_total_pages = max((customers_total + _CUSTOMERS_PAGE_SIZE - 1) // _CUSTOMERS_PAGE_SIZE, 1)
+    customers_base_params = {"start": start, "end": end}
+    if selected_phone:
+        customers_base_params["phone"] = selected_phone
+    if selected_rep_phone:
+        customers_base_params["rep_phone"] = selected_rep_phone
+    customers_pagination_html = _render_pagination(customers_base_params, "cpage", customers_page, customers_total_pages)
+
     rep_rows = "".join(
         f"""<tr class="{'active' if r['rep_phone'] == selected_rep_phone else ''}">
             <td><a href="?start={start}&end={end}&rep_phone={r['rep_phone']}">{_esc(r['rep_phone'])}</a></td>
@@ -368,7 +387,9 @@ def _render_dashboard_html(start, end, stats, daily, customers, leads_summary, l
         else:
             bubbles = "<p class='muted'>No messages for this customer in the selected date range.</p>"
         total_pages = max((transcript_total + _TRANSCRIPT_PAGE_SIZE - 1) // _TRANSCRIPT_PAGE_SIZE, 1)
-        pagination_html = _render_pagination(start, end, selected_phone, transcript_page, total_pages)
+        pagination_html = _render_pagination(
+            {"start": start, "end": end, "phone": selected_phone}, "page", transcript_page, total_pages,
+        )
         transcript_html = f"""
         <div class="panel">
             <h2>Transcript &middot; {_esc(selected_phone)} <span class="muted" style="font-weight:normal">({transcript_total} messages)</span></h2>
@@ -518,11 +539,12 @@ view of rep engagement separate from the leads table above (which only shows the
 
   <div class="grid">
     <div class="panel">
-      <h2>Customers ({len(customers)})</h2>
+      <h2>Customers ({customers_total})</h2>
       <table>
         <tr><th>Phone</th><th>Company</th><th>Rep</th><th>Msgs</th><th>Last active</th></tr>
         {customer_rows}
       </table>
+      {customers_pagination_html}
     </div>
     {transcript_html}
   </div>

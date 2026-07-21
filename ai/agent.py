@@ -39,6 +39,11 @@ ESCALATION_KEYWORDS = [
     # Order/purchase intent - a customer this close to buying should reach
     "place an order", "i want to buy", "i want to order", "how many can i get",
     "in stock", "bulk order", "how much for", "can i get a price",
+    # Pricing requests, additional common phrasings (real miss: "please share
+    # the price" for a 50-carton bulk enquiry wasn't caught by any existing
+    # keyword and had to rely solely on the model's own [[LEAD]] tag)
+    "share the price", "send the price", "share price", "send price",
+    "what's the price", "whats the price", "price please", "pricing please",
 ]
 
 # Signals that a message is an automated system reply (WhatsApp "away

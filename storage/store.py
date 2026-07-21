@@ -525,12 +525,30 @@ def get_daily_counts(start: str = None, end: str = None):
         _put_conn(conn)
 
 
-def get_customers_summary(start: str = None, end: str = None):
-    """One row per customer who messaged in the range, with message counts and last activity."""
+def get_customers_summary(start: str = None, end: str = None, page: int = 1, page_size: int = None):
+    """One page of customers who messaged in the range (most recently active
+    first), with message counts and last activity, plus the total distinct
+    customer count for pagination. page_size=None returns everything on one
+    "page" (used by the Excel export, which should include every customer,
+    not just the page currently shown on the dashboard)."""
     conn = _get_conn()
     try:
         where, params = _date_where(start, end)
         with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT COUNT(*) FROM (
+                    SELECT c.phone FROM conversations c WHERE 1=1 {where} GROUP BY c.phone
+                ) distinct_customers
+            """, params)
+            total = cur.fetchone()[0]
+
+            limit_clause = ""
+            query_params = list(params)
+            if page_size is not None:
+                offset = max(page - 1, 0) * page_size
+                limit_clause = "LIMIT %s OFFSET %s"
+                query_params += [page_size, offset]
+
             cur.execute(f"""
                 SELECT c.phone,
                        COALESCE(cu.company_name, ''),
@@ -542,9 +560,11 @@ def get_customers_summary(start: str = None, end: str = None):
                 WHERE 1=1 {where}
                 GROUP BY c.phone, cu.company_name, cu.rep_name
                 ORDER BY last_message_at DESC
-            """, params)
+                {limit_clause}
+            """, query_params)
             keys = ["phone", "company_name", "rep_name", "message_count", "last_message_at"]
-            return [dict(zip(keys, row)) for row in cur.fetchall()]
+            rows = [dict(zip(keys, row)) for row in cur.fetchall()]
+            return rows, total
     finally:
         _put_conn(conn)
 
