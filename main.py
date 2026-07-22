@@ -14,7 +14,7 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import HTMLResponse
 
 from config import config
-from ai.agent import generate_reply, generate_image_reply, try_extract_company_name, is_auto_reply
+from ai.agent import generate_reply, generate_image_reply, try_extract_company_name, is_auto_reply, is_company_change_signal
 from dashboard import router as dashboard_router
 from privacy_policy import PRIVACY_POLICY_HTML
 from sheets.sheets_client import find_rep_for_company, find_rep_for_phone
@@ -370,6 +370,18 @@ def handle_customer_message(phone: str, text: str):
 
     customer = store.get_customer(phone)
 
+    # A known customer saying they've moved companies, or that the company
+    # on file is wrong entirely ("now with X", "this number is NOT for X"),
+    # means the mapping we have is stale/incorrect - clear it and fall
+    # through to the same first-contact lookup below, so either this same
+    # message's new company name gets matched immediately, or the customer
+    # gets asked for it. Without this, the old company/rep stayed on file
+    # forever and every future message kept pointing at the wrong rep.
+    if customer and customer.get("company_name") and is_company_change_signal(text):
+        logger.info("Company-change signal from %s (was: %s) - clearing stale mapping", phone, customer["company_name"])
+        store.upsert_customer(phone, "")
+        customer = store.get_customer(phone)
+
     # First contact / no company on file yet -> try to recognize them
     if not customer or not customer.get("company_name"):
         rep = None
@@ -396,6 +408,21 @@ def handle_customer_message(phone: str, text: str):
         if rep:
             store.upsert_customer(phone, rep["company_name"], rep["rep_name"], rep["rep_phone"], rep["rep_email"])
             customer = store.get_customer(phone)
+            # A newly-identified company (via a company-change signal or on
+            # first contact matching the sheet) is itself a signup worth a
+            # rep's attention - notify their new rep directly, same as a
+            # product-interest lead, so the rep knows this customer just
+            # showed up under their book.
+            history = store.get_recent_history(phone, limit=6)
+            reply, _ = generate_reply(text, {
+                "company_name": rep["company_name"], "rep_name": rep["rep_name"],
+                "rep_phone": rep["rep_phone"], "rep_email": rep["rep_email"],
+            }, history=history)
+            conversation_id = _send(phone, reply, escalated=True)
+            if conversation_id is not None:
+                store.get_or_open_lead(phone, conversation_id)
+                _notify_escalation(conversation_id, phone, text, customer)
+            return
         elif candidate:
             # They told us a company but it didn't match the sheet - proceed without a rep,
             # the AI will still answer general questions.
