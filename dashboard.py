@@ -85,11 +85,13 @@ def logout():
 
 _TRANSCRIPT_PAGE_SIZE = 20
 _CUSTOMERS_PAGE_SIZE = 20
+_LEADS_LIST_PAGE_SIZE = 20
+_LEADS_SUMMARY_PAGE_SIZE = 20
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
 def dashboard_page(request: Request, start: str = "", end: str = "", phone: str = "", rep_phone: str = "",
-                    page: int = 1, cpage: int = 1):
+                    page: int = 1, cpage: int = 1, lpage: int = 1, spage: int = 1):
     if not _is_logged_in(request):
         return RedirectResponse(url="/dashboard/login", status_code=303)
 
@@ -98,12 +100,14 @@ def dashboard_page(request: Request, start: str = "", end: str = "", phone: str 
     end = end or default_end
     page = max(page, 1)
     cpage = max(cpage, 1)
+    lpage = max(lpage, 1)
+    spage = max(spage, 1)
 
     stats = store.get_stats(start, end)
     daily = store.get_daily_counts(start, end)
     customers, customers_total = store.get_customers_summary(start, end, page=cpage, page_size=_CUSTOMERS_PAGE_SIZE)
-    leads_summary = store.get_leads_summary(start, end)
-    leads_list = store.get_leads_list(start, end)
+    leads_summary, leads_summary_total = store.get_leads_summary(start, end, page=spage, page_size=_LEADS_SUMMARY_PAGE_SIZE)
+    leads_list, leads_list_total = store.get_leads_list(start, end, page=lpage, page_size=_LEADS_LIST_PAGE_SIZE)
     rep_replies = store.get_rep_replies_list(start, end)
     reps = store.get_reps_summary(start, end)
     if phone:
@@ -113,8 +117,9 @@ def dashboard_page(request: Request, start: str = "", end: str = "", phone: str 
     rep_transcript = store.get_rep_transcript(rep_phone, start, end) if rep_phone else None
 
     return HTMLResponse(_render_dashboard_html(
-        start, end, stats, daily, customers, customers_total, cpage, leads_summary, leads_list, rep_replies, reps,
-        phone, transcript, transcript_total, page, rep_phone, rep_transcript,
+        start, end, stats, daily, customers, customers_total, cpage,
+        leads_summary, leads_summary_total, spage, leads_list, leads_list_total, lpage,
+        rep_replies, reps, phone, transcript, transcript_total, page, rep_phone, rep_transcript,
     ))
 
 
@@ -160,14 +165,16 @@ def export_excel(request: Request, start: str = "", end: str = ""):
 
     ws4 = wb.create_sheet("Sales Leads")
     ws4.append(["Sales Rep", "Leads Generated", "Unique Customers", "Last Lead (UTC)", "Failed Notifications"])
-    for row in store.get_leads_summary(start, end):
+    all_leads_summary, _ = store.get_leads_summary(start, end)  # page_size=None -> every rep
+    for row in all_leads_summary:
         ws4.append([row["rep_name"], row["lead_count"], row["customer_count"], str(row["last_lead_at"]), row["failed_notifications"]])
     for col_letter, width in zip("ABCDE", [22, 16, 18, 26, 18]):
         ws4.column_dimensions[col_letter].width = width
 
     ws5 = wb.create_sheet("Lead Details")
     ws5.append(["Timestamp (UTC)", "Phone", "Company", "Sales Rep", "Customer Enquiry", "Status", "Delivery", "Rep Response", "Response Confidence"])
-    for row in store.get_leads_list(start, end):
+    all_leads_list, _ = store.get_leads_list(start, end)  # page_size=None -> every lead
+    for row in all_leads_list:
         response_confidence = {"context_match": "Confirmed", "fallback_most_recent": "Best guess"}.get(row.get("rep_reply_method"), "")
         ws5.append([
             str(row["created_at"]), row["phone"], row["company_name"], row["rep_name"], row["enquiry_text"],
@@ -307,14 +314,16 @@ def _render_pagination(base_params: dict, page_param: str, current_page: int, to
 
 
 def _render_dashboard_html(start, end, stats, daily, customers, customers_total, customers_page,
-                            leads_summary, leads_list, rep_replies, reps,
+                            leads_summary, leads_summary_total, leads_summary_page,
+                            leads_list, leads_list_total, leads_list_page,
+                            rep_replies, reps,
                             selected_phone, transcript, transcript_total, transcript_page,
                             selected_rep_phone, rep_transcript):
     daily_rows = "".join(
         f"<tr><td>{d['day']}</td><td>{d['received']}</td><td>{d['sent']}</td></tr>" for d in daily
     ) or "<tr><td colspan='3' class='muted'>No data in this range</td></tr>"
 
-    total_leads = sum(r["lead_count"] for r in leads_summary)
+    total_leads = leads_list_total
 
     leads_summary_rows = "".join(
         f"""<tr>
@@ -366,6 +375,16 @@ def _render_dashboard_html(start, end, stats, daily, customers, customers_total,
     if selected_rep_phone:
         customers_base_params["rep_phone"] = selected_rep_phone
     customers_pagination_html = _render_pagination(customers_base_params, "cpage", customers_page, customers_total_pages)
+
+    leads_summary_total_pages = max((leads_summary_total + _LEADS_SUMMARY_PAGE_SIZE - 1) // _LEADS_SUMMARY_PAGE_SIZE, 1)
+    leads_summary_pagination_html = _render_pagination(
+        {"start": start, "end": end}, "spage", leads_summary_page, leads_summary_total_pages,
+    )
+
+    leads_list_total_pages = max((leads_list_total + _LEADS_LIST_PAGE_SIZE - 1) // _LEADS_LIST_PAGE_SIZE, 1)
+    leads_list_pagination_html = _render_pagination(
+        {"start": start, "end": end}, "lpage", leads_list_page, leads_list_total_pages,
+    )
 
     rep_rows = "".join(
         f"""<tr class="{'active' if r['rep_phone'] == selected_rep_phone else ''}">
@@ -510,21 +529,23 @@ def _render_dashboard_html(start, end, stats, daily, customers, customers_total,
   </div>
 
   <div class="panel">
-    <h2>Sales leads by rep &middot; how AI is helping the team ({total_leads} total)</h2>
+    <h2>Sales leads by rep &middot; how AI is helping the team ({leads_summary_total} reps, {total_leads} leads total)</h2>
     <p class="muted" style="margin-top:-4px">A "lead" is a customer enquiry the AI recognized as purchase intent, a quote/pricing \
 request, or an urgent issue, and flagged for the assigned sales rep to follow up on.</p>
     <table>
       <tr><th>Sales Rep</th><th>Leads</th><th>Customers</th><th>Last lead</th><th>Failed notifications</th></tr>
       {leads_summary_rows}
     </table>
+    {leads_summary_pagination_html}
   </div>
 
   <div class="panel">
-    <h2>Recent leads</h2>
+    <h2>Recent leads ({leads_list_total})</h2>
     <table>
       <tr><th>When</th><th>Customer</th><th>Rep</th><th>Enquiry</th><th>Status</th><th>Delivery</th><th>Rep Response</th></tr>
       {leads_list_rows}
     </table>
+    {leads_list_pagination_html}
   </div>
 
   <div class="panel">

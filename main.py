@@ -420,14 +420,19 @@ def handle_customer_message(phone: str, text: str):
             # first contact matching the sheet) is itself a signup worth a
             # rep's attention - notify their new rep directly, same as a
             # product-interest lead, so the rep knows this customer just
-            # showed up under their book.
+            # showed up under their book. BUT this must still respect
+            # is_auto_reply() - the triggering message can itself be a
+            # WhatsApp auto-responder firing back at our own outbound
+            # broadcast (which also happens to phone-match a real
+            # customer), and that's never a real signup to escalate on.
             history = store.get_recent_history(phone, limit=6)
-            reply, _ = generate_reply(text, {
+            reply, is_lead = generate_reply(text, {
                 "company_name": rep["company_name"], "rep_name": rep["rep_name"],
                 "rep_phone": rep["rep_phone"], "rep_email": rep["rep_email"],
             }, history=history)
-            conversation_id = _send(phone, reply, escalated=True)
-            if conversation_id is not None:
+            escalate = is_lead or not is_auto_reply(text)
+            conversation_id = _send(phone, reply, escalated=escalate)
+            if escalate and conversation_id is not None:
                 store.get_or_open_lead(phone, conversation_id)
                 _notify_escalation(conversation_id, phone, text, customer)
             return

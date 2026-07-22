@@ -66,6 +66,17 @@ _AUTO_REPLY_SIGNALS = [
     "automated response",
     "auto-reply",
     "autoreply",
+    # More common WhatsApp Business auto-responder phrasing (real
+    # false positives seen on the dashboard: "We are unable to assist
+    # with your message now, but will respond as soon as possible",
+    # "we're currently unavailable")
+    "unable to assist with your message",
+    "will respond as soon as possible",
+    "we're currently unavailable",
+    "we are currently unavailable",
+    "currently unable to respond",
+    "we'll get back to you as soon as possible",
+    "we will get back to you as soon as possible",
     # Arabic equivalents (see comment above)
     "شكرا لك على التواصل",  # "thank you for connecting/reaching out"
     "شكرا للتواصل",

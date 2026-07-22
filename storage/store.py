@@ -669,18 +669,39 @@ def get_rep_transcript(rep_phone: str, start: str = None, end: str = None):
         _put_conn(conn)
 
 
-def get_leads_summary(start: str = None, end: str = None):
-    """One row per sales rep, counting how many distinct leads (deduplicated
-    customer enquiries, see get_or_open_lead) were opened for them in the
-    range, how many distinct customers that represents, their most recent
-    lead, and how many of those leads' rep-notification attempts failed
-    entirely (a fast signal that a rep's phone number might be wrong).
-    Counts DISTINCT leads, not raw escalated messages - a customer's 4-message
-    back-and-forth about one enquiry counts once, not 4 times."""
+def get_leads_summary(start: str = None, end: str = None, page: int = 1, page_size: int = None):
+    """One page of rows (one per sales rep), counting how many distinct
+    leads (deduplicated customer enquiries, see get_or_open_lead) were
+    opened for them in the range, how many distinct customers that
+    represents, their most recent lead, and how many of those leads'
+    rep-notification attempts failed entirely (a fast signal that a rep's
+    phone number might be wrong). Counts DISTINCT leads, not raw escalated
+    messages - a customer's 4-message back-and-forth about one enquiry
+    counts once, not 4 times. Also returns the total distinct-rep count for
+    pagination; page_size=None returns every rep (used by the Excel export,
+    which shouldn't be limited to whatever page the dashboard is showing)."""
     conn = _get_conn()
     try:
         where, params = _date_where(start, end, column="l.opened_at")
         with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT COUNT(*) FROM (
+                    SELECT COALESCE(NULLIF(cu.rep_name, ''), 'Unassigned') AS rep_name
+                    FROM leads l
+                    LEFT JOIN customers cu ON cu.phone = l.phone
+                    WHERE 1=1 {where}
+                    GROUP BY COALESCE(NULLIF(cu.rep_name, ''), 'Unassigned')
+                ) distinct_reps
+            """, params)
+            total = cur.fetchone()[0]
+
+            limit_clause = ""
+            query_params = list(params)
+            if page_size is not None:
+                offset = max(page - 1, 0) * page_size
+                limit_clause = "LIMIT %s OFFSET %s"
+                query_params += [page_size, offset]
+
             cur.execute(f"""
                 SELECT COALESCE(NULLIF(cu.rep_name, ''), 'Unassigned'),
                        COUNT(DISTINCT l.id) AS lead_count,
@@ -698,25 +719,39 @@ def get_leads_summary(start: str = None, end: str = None):
                 WHERE 1=1 {where}
                 GROUP BY COALESCE(NULLIF(cu.rep_name, ''), 'Unassigned')
                 ORDER BY lead_count DESC
-            """, params)
+                {limit_clause}
+            """, query_params)
             keys = ["rep_name", "lead_count", "customer_count", "last_lead_at", "failed_notifications"]
-            return [dict(zip(keys, row)) for row in cur.fetchall()]
+            rows = [dict(zip(keys, row)) for row in cur.fetchall()]
+            return rows, total
     finally:
         _put_conn(conn)
 
 
-def get_leads_list(start: str = None, end: str = None):
-    """Every deduplicated lead in the range, most recent activity first: the
-    customer's original enquiry (the inbound message immediately preceding
-    the lead's first escalated reply), who it was routed to, current status
-    (open/closed - purely time-based, see get_or_open_lead), and
-    delivery_status ("delivered" if any escalation_attempts row across the
-    whole lead succeeded, "failed" if attempts exist but none succeeded,
-    "pending" if none were recorded at all)."""
+def get_leads_list(start: str = None, end: str = None, page: int = 1, page_size: int = None):
+    """One page of deduplicated leads in the range, most recent activity
+    first: the customer's original enquiry (the inbound message immediately
+    preceding the lead's first escalated reply), who it was routed to,
+    current status (open/closed - purely time-based, see get_or_open_lead),
+    and delivery_status ("delivered" if any escalation_attempts row across
+    the whole lead succeeded, "failed" if attempts exist but none
+    succeeded, "pending" if none were recorded at all). Also returns the
+    total lead count for pagination; page_size=None returns every lead
+    (used by the Excel export)."""
     conn = _get_conn()
     try:
         where, params = _date_where(start, end, column="l.last_activity_at")
         with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM leads l WHERE 1=1 {where}", params)
+            total = cur.fetchone()[0]
+
+            limit_clause = ""
+            query_params = list(params)
+            if page_size is not None:
+                offset = max(page - 1, 0) * page_size
+                limit_clause = "LIMIT %s OFFSET %s"
+                query_params += [page_size, offset]
+
             cur.execute(f"""
                 SELECT l.last_activity_at,
                        l.phone,
@@ -760,7 +795,8 @@ def get_leads_list(start: str = None, end: str = None):
                 WHERE 1=1
                 {where}
                 ORDER BY l.last_activity_at DESC
-            """, params)
+                {limit_clause}
+            """, query_params)
             keys = ["created_at", "phone", "company_name", "rep_name", "enquiry_text", "status",
                      "any_success", "attempt_count", "attempt_summary",
                      "rep_reply_text", "rep_reply_at", "rep_reply_method"]
@@ -772,7 +808,7 @@ def get_leads_list(start: str = None, end: str = None):
                     row["delivery_status"] = "delivered"
                 else:
                     row["delivery_status"] = "failed"
-            return rows
+            return rows, total
     finally:
         _put_conn(conn)
 
