@@ -30,9 +30,11 @@ class Config:
     # then each of these in order, only moving to the next one after
     # exhausting retries on the current one - so one provider being at
     # capacity doesn't take down replies to every customer.
+    # NOTE: same model-rot risk as the vision fallback below - verify
+    # against https://openrouter.ai/api/v1/models if replies start failing.
     OPENROUTER_FALLBACK_MODELS = _split_csv(os.getenv(
         "OPENROUTER_FALLBACK_MODELS",
-        "google/gemma-4-26b-a4b-it:free,meta-llama/llama-3.3-70b-instruct:free",
+        "google/gemma-4-26b-a4b-it:free,openai/gpt-oss-20b:free",
     ))
     # Used only for image messages - must be a vision/multimodal-capable
     # model. Previously defaulted to OPENROUTER_MODEL, which is text-only
@@ -42,10 +44,15 @@ class Config:
     # free vision-capable model instead, with its own fallback chain
     # (text-only fallback models can't handle vision input, so this must
     # stay separate from OPENROUTER_FALLBACK_MODELS).
-    OPENROUTER_VISION_MODEL = os.getenv("OPENROUTER_VISION_MODEL", "qwen/qwen2.5-vl-32b-instruct:free")
+    # NOTE: OpenRouter regularly retires/renames free-tier model slugs
+    # (all three of the original defaults here 404'd within weeks) - if
+    # image replies start failing again, check
+    # https://openrouter.ai/api/v1/models for currently-live models with
+    # "image" in architecture.input_modalities and update these.
+    OPENROUTER_VISION_MODEL = os.getenv("OPENROUTER_VISION_MODEL", "google/gemma-4-26b-a4b-it:free")
     OPENROUTER_VISION_FALLBACK_MODELS = _split_csv(os.getenv(
         "OPENROUTER_VISION_FALLBACK_MODELS",
-        "meta-llama/llama-3.2-11b-vision-instruct:free,google/gemini-2.0-flash-exp:free",
+        "nvidia/nemotron-nano-12b-v2-vl:free,google/gemma-4-31b-it:free",
     ))
     OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
