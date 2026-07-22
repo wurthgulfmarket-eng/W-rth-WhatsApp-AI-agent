@@ -123,6 +123,27 @@ def find_rep_for_phone(customer_phone: str):
     return None
 
 
+def is_known_rep_phone(phone: str) -> bool:
+    """
+    True if this phone number appears as ANY row's Rep Phone in the sheet -
+    a sheet-based fallback for recognizing a rep who hasn't had a lead
+    escalated to them yet (storage.store.find_rep_matches_for_phone only
+    recognizes reps with escalation history, so a brand-new rep with zero
+    leads so far would otherwise be treated as an ordinary customer the
+    first time they message in). Deliberately narrower than "could this
+    number ever be a rep" - see main.py's routing guard for how this is
+    combined with the evidence-based check and the same-number-could-be-a-
+    customer-too ambiguity handling.
+    """
+    rows = _load_rows()
+    if not rows or not phone:
+        return False
+    target = _normalize_phone(phone)
+    if not target:
+        return False
+    return any(row["rep_phone"] and _normalize_phone(row["rep_phone"]) == target for row in rows)
+
+
 def find_rep_for_company(company_name: str, threshold: int = None):
     """
     Fuzzy-matches company_name against the sheet's Company Name column.

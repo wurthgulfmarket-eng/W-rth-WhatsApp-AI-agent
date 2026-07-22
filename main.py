@@ -17,7 +17,7 @@ from config import config
 from ai.agent import generate_reply, generate_image_reply, try_extract_company_name, is_auto_reply, is_company_change_signal
 from dashboard import router as dashboard_router
 from privacy_policy import PRIVACY_POLICY_HTML
-from sheets.sheets_client import find_rep_for_company, find_rep_for_phone
+from sheets.sheets_client import find_rep_for_company, find_rep_for_phone, is_known_rep_phone
 from storage import store
 from utils.phone import is_plausible_phone, to_whatsapp_number
 from utils.whatsapp_text import sanitize_template_param
@@ -207,15 +207,23 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
     store.mark_processed(message_id)
 
     # A sales rep replying to an escalation alert must never be routed
-    # through the customer AI-reply pipeline. Only take this path when we
-    # have real evidence the number is a rep (we've actually sent it an
-    # escalation before) AND either an exact swipe-to-reply match to a known
-    # alert, or the number isn't ALSO a known customer - if it's ambiguous
-    # (could be either), default to treating it as a customer message, since
-    # silently misfiling a real customer's message is worse than a rep
-    # occasionally getting an AI reply to their own text.
+    # through the customer AI-reply pipeline. Take this path when we have
+    # evidence the number is a rep - either we've actually sent it an
+    # escalation before, OR the sheet lists it as someone's Rep Phone (a
+    # rep who hasn't had a lead escalated to them yet would otherwise
+    # never be recognized) - AND either an exact swipe-to-reply match to a
+    # known alert, or the number isn't ALSO a known customer - if it's
+    # ambiguous (could be either), default to treating it as a customer
+    # message, since silently misfiling a real customer's message is worse
+    # than a rep occasionally getting an AI reply to their own text.
     context_id = message.get("context", {}).get("id")
-    if store.find_rep_matches_for_phone(from_number) and (
+    is_rep_number = store.find_rep_matches_for_phone(from_number)
+    if not is_rep_number:
+        try:
+            is_rep_number = is_known_rep_phone(from_number)
+        except Exception:
+            logger.exception("Sheet-based rep phone lookup failed for %s", from_number)
+    if is_rep_number and (
         context_id is not None or store.get_customer(from_number) is None
     ):
         if msg_type == "text":

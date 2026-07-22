@@ -280,9 +280,13 @@ def generate_reply(customer_message: str, rep: dict | None, history: list = None
         messages.append({"role": role, "content": text})
     messages.append({"role": "user", "content": customer_message})
 
-    # Capped well below chat_completion's 600-token default - a WhatsApp
-    # reply should be a couple of sentences, not room for a long essay.
-    raw_reply = chat_completion(messages, max_tokens=220)
+    # Below chat_completion's 600-token default, but with enough headroom
+    # for a reasoning model's internal "thinking" tokens (which count
+    # against this budget even though "reasoning": {"exclude": True} keeps
+    # them out of the visible reply) plus a short answer - too tight a cap
+    # here previously cut a reasoning model off mid-thought, before it ever
+    # produced the actual answer.
+    raw_reply = chat_completion(messages, max_tokens=500)
     reply, model_says_lead = _strip_lead_tag(raw_reply)
 
     if is_auto_reply(customer_message):

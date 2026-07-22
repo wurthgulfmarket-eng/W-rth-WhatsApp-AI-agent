@@ -86,6 +86,12 @@ def _call_once(messages, temperature: float, max_tokens: int, model: str = None)
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            # Some free models (e.g. nemotron) are reasoning models that by
+            # default emit their internal "thinking" text as part of the
+            # visible reply - excluding it here is what stops raw
+            # chain-of-thought ("The customer is asking for... I should
+            # mention...") from being sent straight to the customer.
+            "reasoning": {"exclude": True},
         },
         timeout=30,
     )
