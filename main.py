@@ -18,7 +18,7 @@ from config import config
 from ai.agent import generate_reply, generate_image_reply, try_extract_company_name, is_auto_reply, is_company_change_signal
 from dashboard import router as dashboard_router
 from privacy_policy import PRIVACY_POLICY_HTML
-from sheets.sheets_client import find_rep_for_company, find_rep_for_phone, is_known_rep_phone
+from sheets.sheets_client import find_rep_for_company, find_rep_for_company_with_region_fallback, find_rep_for_phone, is_known_rep_phone
 from storage import store
 from utils.phone import is_plausible_phone, to_whatsapp_number
 from utils.whatsapp_text import sanitize_template_param
@@ -378,6 +378,10 @@ def handle_customer_message(phone: str, text: str):
     store.log_message(phone, "in", text)
 
     customer = store.get_customer(phone)
+    # Captured before any upsert below - True only for this phone's very
+    # first message ever, used to fire the new-unmatched-lead notification
+    # at most once per phone (see the `else:` branch further down).
+    customer_was_new = customer is None
 
     # A known customer saying they've moved companies, or that the company
     # on file is wrong entirely ("now with X", "this number is NOT for X"),
@@ -445,7 +449,13 @@ def handle_customer_message(phone: str, text: str):
             candidate = try_extract_company_name(text)
             if candidate:
                 try:
-                    rep = find_rep_for_company(candidate)
+                    # Tries the exact same primary match as before
+                    # (find_rep_for_company) first; only retries with a
+                    # looser, region-scoped fallback if that fails. No
+                    # customer_region input is collected today, so this
+                    # passes None (loose all-rows retry) - behavior-neutral
+                    # for every message that already matched successfully.
+                    rep = find_rep_for_company_with_region_fallback(candidate)
                 except Exception:
                     # Sheets lookup can fail (bad credentials, API outage, etc.) - don't let
                     # that stop the customer from getting an answer, just skip the rep lookup.
@@ -464,14 +474,14 @@ def handle_customer_message(phone: str, text: str):
             # broadcast (which also happens to phone-match a real
             # customer), and that's never a real signup to escalate on.
             history = store.get_recent_history(phone, limit=6)
-            reply, is_lead = generate_reply(text, {
+            reply, is_lead, priority = generate_reply(text, {
                 "company_name": rep["company_name"], "rep_name": rep["rep_name"],
                 "rep_phone": rep["rep_phone"], "rep_email": rep["rep_email"],
             }, history=history)
             escalate = is_lead or not is_auto_reply(text)
             conversation_id = _send(phone, reply, escalated=escalate)
             if escalate and conversation_id is not None:
-                store.get_or_open_lead(phone, conversation_id)
+                store.get_or_open_lead(phone, conversation_id, priority=priority or "medium")
                 _notify_escalation(conversation_id, phone, text, customer)
             return
         elif candidate:
@@ -480,6 +490,9 @@ def handle_customer_message(phone: str, text: str):
             store.upsert_customer(phone, candidate)
             customer = store.get_customer(phone)
         else:
+            if customer_was_new:
+                store.upsert_customer(phone, "")
+                _notify_new_unmatched_lead(phone, text)
             reply = (
                 "Hi! Thanks for reaching out to W\u00fcrth UAE. Could you tell me your company name "
                 "so I can connect you with the right details and your sales representative?"
@@ -497,7 +510,7 @@ def handle_customer_message(phone: str, text: str):
         }
 
     history = store.get_recent_history(phone, limit=6)
-    reply, escalate = generate_reply(text, rep, history=history)
+    reply, escalate, priority = generate_reply(text, rep, history=history)
 
     if escalate:
         reply += "\n\nI've flagged this for your sales representative to follow up personally."
@@ -514,7 +527,7 @@ def handle_customer_message(phone: str, text: str):
         escalate = False
 
     if escalate and conversation_id is not None:
-        store.get_or_open_lead(phone, conversation_id)
+        store.get_or_open_lead(phone, conversation_id, priority=priority or "medium")
         _notify_escalation(conversation_id, phone, text, customer)
 
 
@@ -622,3 +635,24 @@ def _notify_escalation(conversation_id: int | None, customer_phone: str, message
     )
     for staff_number in config.ESCALATION_NOTIFY_NUMBERS:
         _send_and_record_escalation(conversation_id, customer_phone, "ops_fallback", staff_number, None, alert)
+
+
+def _notify_new_unmatched_lead(customer_phone: str, message: str):
+    """A brand-new contact who couldn't be matched to any company at all
+    on their very first message (no rep_phone match, no extractable
+    company candidate) - fires once per phone (see the customer_was_new
+    dedup guard in handle_customer_message) so a real new lead isn't
+    silently dropped while the bot just asks them for their company name.
+    Separate from _notify_escalation - that one's for already-matched
+    customers whose rep notification failed."""
+    if not config.NEW_LEAD_NOTIFY_NUMBERS:
+        logger.info("New unmatched contact from %s, but NEW_LEAD_NOTIFY_NUMBERS not configured - skipping", customer_phone)
+        return
+
+    alert = (
+        f"New unmatched contact on WhatsApp: +{customer_phone}\n"
+        f"Message: \"{message}\"\n\n"
+        f"No company match yet - the bot has asked them for their company name."
+    )
+    for staff_number in config.NEW_LEAD_NOTIFY_NUMBERS:
+        _send_and_record_escalation(None, customer_phone, "new_lead_ops", staff_number, None, alert)

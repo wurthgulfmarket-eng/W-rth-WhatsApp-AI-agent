@@ -171,6 +171,53 @@ def find_rep_for_company(company_name: str, threshold: int = None):
     return result
 
 
+def find_rep_for_company_with_region_fallback(company_name: str, customer_region: str = None,
+                                                 threshold: int = None, fallback_threshold: int = None):
+    """
+    Tries the existing primary match (find_rep_for_company) first, unchanged.
+    Only if that returns None does this retry with a looser threshold,
+    scoped to sheet rows whose Region matches customer_region if given
+    (else all rows, as a last-resort widen). Never engages when the primary
+    match already succeeds - a pure additive fallback layer.
+    Returns the same dict shape as find_rep_for_company(), plus
+    "match_type": "region_fallback" when the fallback path is what matched
+    (absent when the primary match succeeded).
+    """
+    primary = find_rep_for_company(company_name, threshold=threshold)
+    if primary:
+        return primary
+
+    rows = _load_rows()
+    if not rows or not company_name:
+        return None
+
+    fallback_threshold = (
+        fallback_threshold if fallback_threshold is not None else config.FUZZY_MATCH_REGION_FALLBACK_THRESHOLD
+    )
+
+    candidates = rows
+    if customer_region:
+        region_rows = [r for r in rows if r["region"] and r["region"].strip().lower() == customer_region.strip().lower()]
+        if region_rows:
+            candidates = region_rows
+
+    choices = {r["company_name"]: r for r in candidates if r["company_name"]}
+    if not choices:
+        return None
+    match = process.extractOne(company_name, choices.keys(), scorer=fuzz.WRatio)
+    if not match:
+        return None
+
+    matched_name, score, _ = match
+    if score < fallback_threshold:
+        return None
+
+    result = dict(choices[matched_name])
+    result["match_score"] = score
+    result["match_type"] = "region_fallback"
+    return result
+
+
 def refresh_cache():
     """Force a re-fetch on next lookup - call this if the sheet was just updated."""
     _load_rows(force=True)

@@ -172,15 +172,16 @@ def export_excel(request: Request, start: str = "", end: str = ""):
         ws4.column_dimensions[col_letter].width = width
 
     ws5 = wb.create_sheet("Lead Details")
-    ws5.append(["Timestamp (UTC)", "Phone", "Company", "Sales Rep", "Customer Enquiry", "Status", "Delivery", "Rep Response", "Response Confidence"])
+    ws5.append(["Timestamp (UTC)", "Phone", "Company", "Sales Rep", "Customer Enquiry", "Priority", "Status", "Delivery", "Rep Response", "Response Confidence"])
     all_leads_list, _ = store.get_leads_list(start, end)  # page_size=None -> every lead
     for row in all_leads_list:
         response_confidence = {"context_match": "Confirmed", "fallback_most_recent": "Best guess"}.get(row.get("rep_reply_method"), "")
         ws5.append([
             str(row["created_at"]), row["phone"], row["company_name"], row["rep_name"], row["enquiry_text"],
-            row["status"], row["delivery_status"], row.get("rep_reply_text") or "", response_confidence,
+            (row.get("priority") or "").title(), row["status"], row["delivery_status"],
+            row.get("rep_reply_text") or "", response_confidence,
         ])
-    for col_letter, width in zip("ABCDEFGHI", [26, 16, 24, 20, 60, 10, 14, 40, 16]):
+    for col_letter, width in zip("ABCDEFGHIJ", [26, 16, 24, 20, 60, 10, 10, 14, 40, 16]):
         ws5.column_dimensions[col_letter].width = width
 
     ws6 = wb.create_sheet("Rep Replies")
@@ -227,6 +228,7 @@ def _fmt_ts(ts) -> str:
 
 _DELIVERY_PILL_LABELS = {"delivered": "Delivered", "failed": "Failed", "pending": "Pending"}
 _STATUS_PILL_LABELS = {"open": "Open", "closed": "Closed"}
+_PRIORITY_PILL_LABELS = {"high": "High", "medium": "Medium", "low": "Low"}
 
 
 def _delivery_pill(status: str, summary: str) -> str:
@@ -238,6 +240,13 @@ def _delivery_pill(status: str, summary: str) -> str:
 def _status_pill(status: str) -> str:
     label = _STATUS_PILL_LABELS.get(status, status)
     return f'<span class="pill status-{_esc(status)}">{label}</span>'
+
+
+def _priority_pill(priority: str | None) -> str:
+    if not priority:
+        return '<span class="muted">-</span>'
+    label = _PRIORITY_PILL_LABELS.get(priority, priority)
+    return f'<span class="pill priority-{_esc(priority)}">{label}</span>'
 
 
 def _rep_reply_cell(reply_text: str | None, reply_at, method: str | None) -> str:
@@ -341,11 +350,12 @@ def _render_dashboard_html(start, end, stats, daily, customers, customers_total,
             <td>{_esc(l['company_name']) or _esc(l['phone'])}</td>
             <td>{_esc(l['rep_name'])}</td>
             <td>{_esc(l['enquiry_text'])}</td>
+            <td>{_priority_pill(l.get('priority'))}</td>
             <td>{_status_pill(l['status'])}</td>
             <td>{_delivery_pill(l['delivery_status'], l.get('attempt_summary') or '')}</td>
             <td>{_rep_reply_cell(l.get('rep_reply_text'), l.get('rep_reply_at'), l.get('rep_reply_method'))}</td>
         </tr>""" for l in leads_list
-    ) or "<tr><td colspan='7' class='muted'>No leads in this range</td></tr>"
+    ) or "<tr><td colspan='8' class='muted'>No leads in this range</td></tr>"
 
     _CONFIDENCE_LABELS = {"context_match": "Confirmed", "fallback_most_recent": "Best guess", "unresolved": "Unresolved"}
     rep_replies_rows = "".join(
@@ -479,6 +489,9 @@ def _render_dashboard_html(start, end, stats, daily, customers, customers_total,
   .pill.status-open {{ background: #e8f0fe; color: #1a56c8; }}
   .pill.status-closed {{ background: #f0f0f0; color: #888; }}
   .pill.guess {{ background: #fff4e5; color: #a85d00; }}
+  .pill.priority-high {{ background: #fdeaec; color: #c8102e; }}
+  .pill.priority-medium {{ background: #fff4e5; color: #a85d00; }}
+  .pill.priority-low {{ background: #f0f0f0; color: #888; }}
   .chat-window {{ max-height: 500px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }}
   .bubble {{ max-width: 85%; padding: 8px 12px; border-radius: 10px; font-size: 0.9em; }}
   .bubble.in {{ align-self: flex-start; background: #eee; }}
@@ -542,7 +555,7 @@ request, or an urgent issue, and flagged for the assigned sales rep to follow up
   <div class="panel">
     <h2>Recent leads ({leads_list_total})</h2>
     <table>
-      <tr><th>When</th><th>Customer</th><th>Rep</th><th>Enquiry</th><th>Status</th><th>Delivery</th><th>Rep Response</th></tr>
+      <tr><th>When</th><th>Customer</th><th>Rep</th><th>Enquiry</th><th>Priority</th><th>Status</th><th>Delivery</th><th>Rep Response</th></tr>
       {leads_list_rows}
     </table>
     {leads_list_pagination_html}

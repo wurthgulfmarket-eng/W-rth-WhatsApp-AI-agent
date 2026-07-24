@@ -127,6 +127,7 @@ def _init_schema():
             CREATE INDEX IF NOT EXISTS idx_leads_phone ON leads (phone);
             CREATE INDEX IF NOT EXISTS idx_leads_status ON leads (status);
             CREATE INDEX IF NOT EXISTS idx_leads_last_activity ON leads (last_activity_at);
+            ALTER TABLE leads ADD COLUMN IF NOT EXISTS priority TEXT;
 
             CREATE TABLE IF NOT EXISTS rep_replies (
                 id SERIAL PRIMARY KEY,
@@ -302,18 +303,26 @@ def record_escalation_attempt(
         _put_conn(conn)
 
 
-def get_or_open_lead(phone: str, conversation_id: int) -> int:
+_PRIORITY_RANK = {"low": 1, "medium": 2, "high": 3}
+
+
+def get_or_open_lead(phone: str, conversation_id: int, priority: str | None = None) -> int:
     """Groups escalated messages from the same customer into one 'lead' as
     long as they keep coming within LEAD_DEDUP_WINDOW_HOURS of the previous
     one - without this, a single back-and-forth enquiry (e.g. 4 messages in
     5 minutes) shows up as 4 separate leads on the dashboard instead of 1.
     A gap longer than the window closes the old lead and starts a new one,
-    e.g. the customer returning days later with an unrelated enquiry."""
+    e.g. the customer returning days later with an unrelated enquiry.
+    priority ("high"/"medium"/"low") is optional - when updating an
+    existing open lead, it only ever upgrades the stored priority (never
+    downgrades), so one HIGH-priority message in a back-and-forth keeps the
+    whole lead flagged HIGH even if later messages in the same thread are
+    lower priority."""
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, last_activity_at FROM leads WHERE phone = %s AND status = 'open' "
+                "SELECT id, last_activity_at, priority FROM leads WHERE phone = %s AND status = 'open' "
                 "ORDER BY id DESC LIMIT 1",
                 (phone,),
             )
@@ -321,12 +330,15 @@ def get_or_open_lead(phone: str, conversation_id: int) -> int:
             now = datetime.now(timezone.utc)
 
             if row:
-                lead_id, last_activity_at = row
+                lead_id, last_activity_at, existing_priority = row
                 window_expired = (now - last_activity_at).total_seconds() > config.LEAD_DEDUP_WINDOW_HOURS * 3600
                 if not window_expired:
+                    new_priority = existing_priority
+                    if priority and _PRIORITY_RANK.get(priority, 0) > _PRIORITY_RANK.get(existing_priority, 0):
+                        new_priority = priority
                     cur.execute(
-                        "UPDATE leads SET last_conversation_id = %s, last_activity_at = %s WHERE id = %s",
-                        (conversation_id, now, lead_id),
+                        "UPDATE leads SET last_conversation_id = %s, last_activity_at = %s, priority = %s WHERE id = %s",
+                        (conversation_id, now, new_priority, lead_id),
                     )
                     conn.commit()
                     return lead_id
@@ -334,8 +346,8 @@ def get_or_open_lead(phone: str, conversation_id: int) -> int:
 
             cur.execute(
                 "INSERT INTO leads (phone, first_conversation_id, last_conversation_id, opened_at, "
-                "last_activity_at, status, created_at) VALUES (%s, %s, %s, %s, %s, 'open', %s) RETURNING id",
-                (phone, conversation_id, conversation_id, now, now, now),
+                "last_activity_at, status, priority, created_at) VALUES (%s, %s, %s, %s, %s, 'open', %s, %s) RETURNING id",
+                (phone, conversation_id, conversation_id, now, now, priority, now),
             )
             new_id = cur.fetchone()[0]
         conn.commit()
@@ -768,6 +780,7 @@ def get_leads_list(start: str = None, end: str = None, page: int = 1, page_size:
                            ''
                        ) AS enquiry_text,
                        l.status,
+                       l.priority,
                        attempts.any_success,
                        attempts.attempt_count,
                        attempts.attempt_summary,
@@ -797,7 +810,7 @@ def get_leads_list(start: str = None, end: str = None, page: int = 1, page_size:
                 ORDER BY l.last_activity_at DESC
                 {limit_clause}
             """, query_params)
-            keys = ["created_at", "phone", "company_name", "rep_name", "enquiry_text", "status",
+            keys = ["created_at", "phone", "company_name", "rep_name", "enquiry_text", "status", "priority",
                      "any_success", "attempt_count", "attempt_summary",
                      "rep_reply_text", "rep_reply_at", "rep_reply_method"]
             rows = [dict(zip(keys, row)) for row in cur.fetchall()]

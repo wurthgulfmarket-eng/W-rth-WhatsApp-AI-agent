@@ -145,6 +145,12 @@ def is_company_change_signal(message: str) -> bool:
 # Parsed and stripped before the reply is ever sent to the customer.
 LEAD_TAG = "[[LEAD]]"
 NO_LEAD_TAG = "[[NO_LEAD]]"
+# Graded lead-priority tags, additive to the two above - a bare LEAD_TAG is
+# still parsed correctly (as priority "medium") for backward compatibility
+# in case the model ever omits the grade.
+LEAD_TAG_HIGH = "[[LEAD:HIGH]]"
+LEAD_TAG_MEDIUM = "[[LEAD:MEDIUM]]"
+LEAD_TAG_LOW = "[[LEAD:LOW]]"
 
 SYSTEM_PROMPT_TEMPLATE = """You are a real member of the Würth UAE team chatting with a customer on WhatsApp - not \
 a generic chatbot. Talk like a helpful, knowledgeable colleague would: warm, natural, a little conversational \
@@ -193,17 +199,26 @@ knowledge base context.
 context based on their Emirate/area if mentioned, or ask which Emirate they're in if not specified.
 - Keep replies WhatsApp-length: 1-3 short sentences by default. Only go longer if the customer's question genuinely \
 needs it (e.g. listing several branches) - and even then, stay as brief as the facts allow.
+- **Match the customer's language.** Detect the language the customer is writing in (English, Arabic, or any \
+other language) and reply in that same language by default - don't default to English if they've written in \
+something else. If a customer switches languages mid-conversation, follow their most recent message's language. \
+Keep the same tone and brevity rules regardless of language.
 
 **Lead tagging (required on every reply):** after writing your reply, end it with exactly one tag on its own new \
-line: {lead_tag} if this message shows the customer is interested in a specific Würth product/service and might be \
-ready to order, get a quote, or needs a rep's help soon (e.g. asking if you carry/have/stock something, asking \
-about pricing or availability, wanting to buy, having an issue that needs human follow-up) - or {no_lead_tag} for \
-general chat, greetings, browsing questions with no clear intent yet, or anything already fully resolved (e.g. a \
-simple "okay"/"thanks" with nothing new being asked). When in doubt about genuine interest in Würth's products or \
-services specifically, prefer {lead_tag} - the cost of missing a real lead is worse than one extra notification to \
-the rep.
+line. If this message shows the customer is interested in a specific Würth product/service and might be ready to \
+order, get a quote, or needs a rep's help soon, tag it with a priority grade:
+- {lead_tag_high} - ready to act now: placing/confirming an order, an urgent issue, a bulk/large quantity request, \
+or explicitly asking for a quote or callback right away.
+- {lead_tag_medium} - clear genuine interest in a specific product/service, but not yet urgent or ready to commit \
+(e.g. asking if you carry/stock something, general pricing questions).
+- {lead_tag_low} - mild or early-stage interest, browsing-adjacent, not yet a clear buying signal but still worth \
+a rep's attention (e.g. vague product curiosity, "just looking into options").
+Use {no_lead_tag} for general chat, greetings, browsing questions with no clear intent yet, or anything already \
+fully resolved (e.g. a simple "okay"/"thanks" with nothing new being asked). When in doubt about genuine interest \
+in Würth's products or services specifically, prefer tagging a lead (pick the priority that best fits) over \
+{no_lead_tag} - the cost of missing a real lead is worse than one extra notification to the rep.
 
-**Never tag {lead_tag} for these, even though they may superficially resemble business content** - always use \
+**Never tag a lead for these, even though they may superficially resemble business content** - always use \
 {no_lead_tag} instead:
 - Automated/system text: out-of-office replies, "thank you for connecting/contacting us" auto-responses, vacation \
   or away messages.
@@ -215,7 +230,7 @@ the rep.
 **If the customer says they've changed companies, or that their number/this account isn't for the company you \
 have on file** (e.g. "now with X", "I don't work there anymore", "this number is NOT for X"): acknowledge it \
 warmly and briefly, then ask for their current company name so you can connect them correctly - don't keep \
-referring to their old company or old rep after this. Do not use {lead_tag} for this message itself; a new lead \
+referring to their old company or old rep after this. Do not use a lead tag for this message itself; a new lead \
 gets created automatically once their new company is confirmed.
 
 This tag is stripped before the customer sees your message, so it does not need to read naturally - just place it \
@@ -260,28 +275,41 @@ def needs_escalation(message: str) -> bool:
     return any(keyword in lowered for keyword in ESCALATION_KEYWORDS)
 
 
-def _strip_lead_tag(reply: str) -> tuple[str, bool | None]:
-    """Parses and removes the trailing [[LEAD]]/[[NO_LEAD]] tag.
-    Returns (cleaned_reply, is_lead) - is_lead is None if the model omitted
-    the tag entirely, so the caller can fall back to the keyword check."""
+def _strip_lead_tag(reply: str) -> tuple[str, bool | None, str | None]:
+    """Parses and removes the trailing lead tag. Checks the graded
+    [[LEAD:HIGH/MEDIUM/LOW]] tags first, then falls back to a bare
+    [[LEAD]] (old form, parsed as priority "medium" for backward
+    compatibility) and [[NO_LEAD]].
+    Returns (cleaned_reply, is_lead, priority) - is_lead is None if the
+    model omitted the tag entirely (caller falls back to the keyword
+    check); priority is one of "high"/"medium"/"low" when is_lead is True,
+    else None."""
     text = reply.strip()
+    for tag, priority in ((LEAD_TAG_HIGH, "high"), (LEAD_TAG_MEDIUM, "medium"), (LEAD_TAG_LOW, "low")):
+        if text.endswith(tag):
+            return text[: -len(tag)].strip(), True, priority
     if text.endswith(LEAD_TAG):
-        return text[: -len(LEAD_TAG)].strip(), True
+        return text[: -len(LEAD_TAG)].strip(), True, "medium"
     if text.endswith(NO_LEAD_TAG):
-        return text[: -len(NO_LEAD_TAG)].strip(), False
-    return text, None
+        return text[: -len(NO_LEAD_TAG)].strip(), False, None
+    return text, None, None
 
 
-def generate_reply(customer_message: str, rep: dict | None, history: list = None) -> tuple[str, bool]:
-    """Returns (reply_text, is_lead). is_lead combines the model's own
-    LEAD_TAG decision with the ESCALATION_KEYWORDS backstop, so a lead is
-    flagged if either signals one."""
+def generate_reply(customer_message: str, rep: dict | None, history: list = None) -> tuple[str, bool, str | None]:
+    """Returns (reply_text, is_lead, priority). is_lead combines the
+    model's own lead-tag decision with the ESCALATION_KEYWORDS backstop, so
+    a lead is flagged if either signals one. priority is "high"/"medium"/
+    "low" when is_lead is True (defaulting to "medium" when only the
+    keyword backstop fired, since it has no severity signal of its own),
+    else None."""
     kb_chunks = kb_search(customer_message, top_k=4)
 
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
         kb_context=_format_kb_context(kb_chunks),
         rep_context=_format_rep_context(rep),
-        lead_tag=LEAD_TAG,
+        lead_tag_high=LEAD_TAG_HIGH,
+        lead_tag_medium=LEAD_TAG_MEDIUM,
+        lead_tag_low=LEAD_TAG_LOW,
         no_lead_tag=NO_LEAD_TAG,
     )
 
@@ -298,16 +326,23 @@ def generate_reply(customer_message: str, rep: dict | None, history: list = None
     # here previously cut a reasoning model off mid-thought, before it ever
     # produced the actual answer.
     raw_reply = chat_completion(messages, max_tokens=500)
-    reply, model_says_lead = _strip_lead_tag(raw_reply)
+    reply, model_says_lead, model_priority = _strip_lead_tag(raw_reply)
 
     if is_auto_reply(customer_message):
         # Automated system text (out-of-office, "thank you for connecting"
         # auto-responses) is never a real lead, regardless of what the model
         # or keyword backstop would otherwise decide - overrides both.
         is_lead = False
+        priority = None
     else:
         is_lead = bool(model_says_lead) or needs_escalation(customer_message)
-    return reply, is_lead
+        priority = model_priority if is_lead else None
+        if is_lead and priority is None:
+            # Only the keyword backstop fired (model gave no lead tag at
+            # all) - it has no severity signal of its own, so default to
+            # "medium" rather than leaving priority unset for a real lead.
+            priority = "medium"
+    return reply, is_lead, priority
 
 
 def generate_image_reply(image_bytes: bytes, mime_type: str, rep: dict | None, caption: str = "") -> str:

@@ -44,6 +44,8 @@ services:
         value: "75"
       - key: ESCALATION_NOTIFY_NUMBERS
         sync: false
+      - key: NEW_LEAD_NOTIFY_NUMBERS
+        sync: false
       - key: DATABASE_URL
         sync: false
       - key: DASHBOARD_ADMIN_USERNAME

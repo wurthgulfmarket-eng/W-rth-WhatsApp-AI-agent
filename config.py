@@ -83,7 +83,17 @@ class Config:
 
     # App behavior
     FUZZY_MATCH_THRESHOLD = int(os.getenv("FUZZY_MATCH_THRESHOLD", "85"))
+    # Deliberately looser than FUZZY_MATCH_THRESHOLD - only used as a second-
+    # chance retry (scoped to the sheet's Region column when available)
+    # after the primary company-name match has already failed.
+    FUZZY_MATCH_REGION_FALLBACK_THRESHOLD = int(os.getenv("FUZZY_MATCH_REGION_FALLBACK_THRESHOLD", "70"))
     ESCALATION_NOTIFY_NUMBERS = _split_csv(os.getenv("ESCALATION_NOTIFY_NUMBERS", ""))
+    # Separate from ESCALATION_NOTIFY_NUMBERS (that one's a rep-notification-
+    # failure backstop for ALREADY-matched customers) - this fires once for
+    # a brand-new contact who can't be matched to any company at all on
+    # their very first message, so a real new lead isn't silently dropped
+    # while the bot just asks them for their company name.
+    NEW_LEAD_NOTIFY_NUMBERS = _split_csv(os.getenv("NEW_LEAD_NOTIFY_NUMBERS", ""))
     PORT = int(os.getenv("PORT", "8000"))
 
     # Lead-escalation WhatsApp message templates (optional). Free-form
