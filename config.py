@@ -73,6 +73,14 @@ class Config:
     GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
     GOOGLE_SHEET_WORKSHEET_NAME = os.getenv("GOOGLE_SHEET_WORKSHEET_NAME", "Sheet1")
 
+    # Once a customer is matched to a company/rep, that mapping is cached in
+    # Postgres so we don't re-ask for their company name on every message -
+    # but without a refresh, an update to the rep's phone/name in the sheet
+    # (e.g. a rep leaving, a number change) would never reach customers
+    # already on file. Re-check the sheet and refresh rep_name/rep_phone/
+    # rep_email if the cached record is older than this many hours.
+    REP_INFO_REFRESH_HOURS = int(os.getenv("REP_INFO_REFRESH_HOURS", "12"))
+
     # App behavior
     FUZZY_MATCH_THRESHOLD = int(os.getenv("FUZZY_MATCH_THRESHOLD", "85"))
     ESCALATION_NOTIFY_NUMBERS = _split_csv(os.getenv("ESCALATION_NOTIFY_NUMBERS", ""))

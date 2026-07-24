@@ -9,6 +9,7 @@ under WhatsApp > Configuration, together with WHATSAPP_VERIFY_TOKEN from .env.
 import json
 import logging
 import os
+from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import HTMLResponse
@@ -389,6 +390,43 @@ def handle_customer_message(phone: str, text: str):
         logger.info("Company-change signal from %s (was: %s) - clearing stale mapping", phone, customer["company_name"])
         store.upsert_customer(phone, "")
         customer = store.get_customer(phone)
+
+    # A known customer's rep info (name/phone/email) is cached in Postgres
+    # from whenever they were first matched - if that's gotten stale (a rep
+    # left, their number changed in the sheet), a customer could keep being
+    # pointed at the wrong/old rep indefinitely with nothing ever
+    # re-checking the sheet. Periodically re-look-up their company and
+    # refresh the cached rep fields if the sheet's current data differs.
+    if customer and customer.get("company_name"):
+        updated_at = customer.get("updated_at")
+        is_stale = updated_at is None or (
+            datetime.now(timezone.utc) - updated_at
+        ).total_seconds() > config.REP_INFO_REFRESH_HOURS * 3600
+        if is_stale:
+            try:
+                fresh = find_rep_for_company(customer["company_name"])
+            except Exception:
+                fresh = None
+                logger.exception("Rep-info refresh lookup failed for company '%s'", customer["company_name"])
+            if fresh and (
+                fresh["rep_name"] != customer.get("rep_name")
+                or fresh["rep_phone"] != customer.get("rep_phone")
+                or fresh["rep_email"] != customer.get("rep_email")
+            ):
+                logger.info(
+                    "Refreshing stale rep info for %s (%s): %s/%s -> %s/%s",
+                    phone, customer["company_name"], customer.get("rep_name"), customer.get("rep_phone"),
+                    fresh["rep_name"], fresh["rep_phone"],
+                )
+                store.upsert_customer(phone, fresh["company_name"], fresh["rep_name"], fresh["rep_phone"], fresh["rep_email"])
+                customer = store.get_customer(phone)
+            elif fresh:
+                # Data hasn't actually changed - still touch updated_at so
+                # we don't re-check the sheet on every message once it's
+                # confirmed current, only every REP_INFO_REFRESH_HOURS.
+                store.upsert_customer(phone, customer["company_name"], customer.get("rep_name", ""),
+                                       customer.get("rep_phone", ""), customer.get("rep_email", ""))
+                customer = store.get_customer(phone)
 
     # First contact / no company on file yet -> try to recognize them
     if not customer or not customer.get("company_name"):

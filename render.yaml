@@ -38,6 +38,8 @@ services:
         sync: false
       - key: GOOGLE_SHEET_WORKSHEET_NAME
         value: Sheet1
+      - key: REP_INFO_REFRESH_HOURS
+        value: "12"
       - key: FUZZY_MATCH_THRESHOLD
         value: "75"
       - key: ESCALATION_NOTIFY_NUMBERS

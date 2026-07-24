@@ -230,7 +230,7 @@ def get_customer(phone: str):
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
-                "SELECT phone, company_name, rep_name, rep_phone, rep_email FROM customers WHERE phone = %s",
+                "SELECT phone, company_name, rep_name, rep_phone, rep_email, updated_at FROM customers WHERE phone = %s",
                 (phone,),
             )
             row = cur.fetchone()
