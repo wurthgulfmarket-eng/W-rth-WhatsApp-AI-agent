@@ -208,25 +208,32 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
     store.mark_processed(message_id)
 
     # A sales rep replying to an escalation alert must never be routed
-    # through the customer AI-reply pipeline. Take this path when we have
-    # evidence the number is a rep - either we've actually sent it an
-    # escalation before, OR the sheet lists it as someone's Rep Phone (a
-    # rep who hasn't had a lead escalated to them yet would otherwise
-    # never be recognized) - AND either an exact swipe-to-reply match to a
-    # known alert, or the number isn't ALSO a known customer - if it's
-    # ambiguous (could be either), default to treating it as a customer
-    # message, since silently misfiling a real customer's message is worse
-    # than a rep occasionally getting an AI reply to their own text.
+    # through the customer AI-reply pipeline. If the sheet directly lists
+    # this number as someone's Rep Phone, that's authoritative - always
+    # treat it as a rep, even if it also has a stray `customers` row (a rep
+    # can end up with one from an earlier message before ever being
+    # recognized as staff). The weaker evidence-based signal (we've sent
+    # this number an escalation before, but it's NOT in the sheet as a rep
+    # today) is treated more cautiously: only take the rep path there via
+    # an exact swipe-to-reply match, or if the number isn't ALSO a known
+    # customer - if that one's ambiguous, default to the customer pipeline,
+    # since silently misfiling a real customer's message is worse than a
+    # rep occasionally getting an AI reply to their own text.
     context_id = message.get("context", {}).get("id")
-    is_rep_number = store.find_rep_matches_for_phone(from_number)
-    if not is_rep_number:
-        try:
-            is_rep_number = is_known_rep_phone(from_number)
-        except Exception:
-            logger.exception("Sheet-based rep phone lookup failed for %s", from_number)
-    if is_rep_number and (
-        context_id is not None or store.get_customer(from_number) is None
-    ):
+    try:
+        is_sheet_rep = is_known_rep_phone(from_number)
+    except Exception:
+        is_sheet_rep = False
+        logger.exception("Sheet-based rep phone lookup failed for %s", from_number)
+
+    if is_sheet_rep:
+        is_rep_number = True
+    else:
+        is_rep_number = store.find_rep_matches_for_phone(from_number) and (
+            context_id is not None or store.get_customer(from_number) is None
+        )
+
+    if is_rep_number:
         if msg_type == "text":
             text = message.get("text", {}).get("body", "").strip()
             if text:
