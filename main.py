@@ -268,19 +268,32 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
 
 def _process_rep_reply(rep_phone: str, text: str, message_id: str, context_id: str | None):
     """Captures a sales rep's WhatsApp reply to an escalation alert and links
-    it to the right lead (see storage.store.resolve_rep_reply_lead). This
-    must NEVER call _send()/send_text_message() - a rep replying to an
-    internal alert must not receive an AI-generated chatbot reply. Also
-    deliberately does not write to `conversations` (customer-transcript
-    data) so rep replies don't pollute the dashboard's per-customer view."""
+    it to the right lead (see storage.store.resolve_rep_reply_lead). Never
+    generates an AI reply to the rep, and deliberately does not write to
+    `conversations` (customer-transcript data) so rep replies don't
+    pollute the dashboard's per-customer view. The ONE exception: a short,
+    fixed acknowledgment (not AI-generated) sent once per lead, on the
+    rep's first reply to that specific escalation - closes the loop for
+    the rep and signals they're set for the next lead, without ever
+    running their text through the customer reply pipeline."""
     try:
         mark_as_read(message_id)
     except WhatsAppError as e:
         logger.warning("mark_as_read failed: %s", e)
 
     escalation_attempt_id, lead_id, method = store.resolve_rep_reply_lead(rep_phone, context_id)
+    is_first_reply = store.is_first_reply_for_lead(lead_id)
     store.record_rep_reply(rep_phone, text, message_id, context_id, escalation_attempt_id, lead_id, method)
     logger.info("Recorded rep reply from %s (lead_id=%s, method=%s)", rep_phone, lead_id, method)
+
+    if is_first_reply:
+        rep_name = store.get_rep_name_for_phone(rep_phone)
+        first_name = (rep_name or "").split(" ")[0] or "there"
+        ack = f"Thanks {first_name}! Noted - you're all set. I'll ping you here when the next lead comes in."
+        try:
+            send_text_message(to_whatsapp_number(rep_phone), ack)
+        except WhatsAppError as e:
+            logger.warning("Failed to send rep reply acknowledgment to %s: %s", rep_phone, e)
 
 
 def _process_text_message(phone: str, text: str, message_id: str):

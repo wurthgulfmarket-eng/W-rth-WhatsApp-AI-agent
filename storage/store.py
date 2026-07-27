@@ -455,6 +455,40 @@ def resolve_rep_reply_lead(rep_phone: str, context_message_id: str | None):
         _put_conn(conn)
 
 
+def get_rep_name_for_phone(rep_phone: str) -> str | None:
+    """Best-effort rep name lookup from the most recent escalation we sent
+    this phone number - avoids a separate sheet lookup just to personalize
+    the one-time reply acknowledgment."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT target_name FROM escalation_attempts WHERE target_type = 'rep' AND target_phone = %s "
+                "AND target_name IS NOT NULL AND target_name != '' ORDER BY created_at DESC LIMIT 1",
+                (rep_phone,),
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+    finally:
+        _put_conn(conn)
+
+
+def is_first_reply_for_lead(lead_id: int | None) -> bool:
+    """True if no rep_replies row exists yet for this lead - checked BEFORE
+    record_rep_reply() inserts the new one, so the caller can send a
+    one-time acknowledgment on a rep's first reply to a given escalation
+    without repeating it on every subsequent reply about the same lead."""
+    if lead_id is None:
+        return False
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM rep_replies WHERE lead_id = %s LIMIT 1", (lead_id,))
+            return cur.fetchone() is None
+    finally:
+        _put_conn(conn)
+
+
 def record_rep_reply(
     rep_phone: str, reply_text: str, whatsapp_message_id: str, context_message_id: str | None,
     escalation_attempt_id: int | None, lead_id: int | None, resolution_method: str,
