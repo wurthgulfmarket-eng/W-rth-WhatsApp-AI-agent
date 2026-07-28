@@ -89,6 +89,12 @@ _AUTO_REPLY_SIGNALS = [
     "please leave your requirement",
     "leave your requirement",
     "to know more about us",
+    "for any enquiries, text or call us",
+    "here to help with all your",
+    "don't forget to follow us",
+    "dont forget to follow us",
+    "follow us on instagram",
+    "follow us on facebook",
     # Arabic equivalents (see comment above)
     "شكرا لك على التواصل",  # "thank you for connecting/reaching out"
     "شكرا للتواصل",
@@ -118,9 +124,18 @@ _LABELED_FIELD_RE = re.compile(
     r"\b(shop location|warehouse location|warehouse|mobile|land ?line|address|working hours|business hours|"
     r"branch|showroom)\s*:", re.IGNORECASE,
 )
+# A message that OPENS with "Welcome to [business name]" is a WhatsApp
+# Business auto-greeting template, not something a real customer would ever
+# type as their own opening line - a strong, wording-independent signal on
+# its own, regardless of what follows (real false positive: "Welcome to
+# Mount Hope Spare Parts Trading M11 - For any enquiries...").
+_WELCOME_GREETING_RE = re.compile(r"^\s*welcome to\b", re.IGNORECASE)
 
 
 def _looks_like_auto_reply_template(message: str) -> bool:
+    if _WELCOME_GREETING_RE.match(message):
+        return True
+
     lines = [ln for ln in message.split("\n") if ln.strip()]
     emoji_lines = sum(1 for ln in lines if _EMOJI_BULLET_RE.search(ln))
     has_working_hours = bool(_WORKING_HOURS_RE.search(message))
