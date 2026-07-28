@@ -77,6 +77,18 @@ _AUTO_REPLY_SIGNALS = [
     "currently unable to respond",
     "we'll get back to you as soon as possible",
     "we will get back to you as soon as possible",
+    # More real false positives - every business phrases their auto-reply
+    # slightly differently ("thank you contacting X" missing "for",
+    # "unavailable right now" instead of "currently unavailable", "will
+    # respond shortly" instead of "as soon as possible") - phrase lists
+    # will always be a step behind real-world variants, hence the
+    # structural detector below doing most of the heavy lifting now.
+    "thank you contacting",  # missing "for" - a real business's typo/variant
+    "unavailable right now",
+    "will respond shortly",
+    "please leave your requirement",
+    "leave your requirement",
+    "to know more about us",
     # Arabic equivalents (see comment above)
     "شكرا لك على التواصل",  # "thank you for connecting/reaching out"
     "شكرا للتواصل",
@@ -89,28 +101,49 @@ _AUTO_REPLY_SIGNALS = [
 ]
 
 # Structural signals that a message is a WhatsApp Business "away message" /
-# auto-responder template, independent of language - these templates are
-# typically multi-line with several emoji-prefixed bullet points (hours,
-# location, social links) and don't read like a real person typing on their
-# phone. Language-specific phrase lists (_AUTO_REPLY_SIGNALS above) miss
-# any language they don't explicitly cover; this catches the shape instead.
+# auto-responder template, independent of language and independent of exact
+# phrasing (every business writes their auto-reply slightly differently,
+# so a phrase list will always be a step behind real-world variants). These
+# templates cluster multiple pieces of business-card-style contact info
+# together - emoji bullets, working hours, several phone numbers, several
+# links, or labeled fields like "SHOP LOCATION:"/"WAREHOUSE:"/"MOBILE:" -
+# in a way a real person typing a WhatsApp message essentially never does.
 _EMOJI_BULLET_RE = re.compile(
     r"[\U0001F300-\U0001FAFF☀-➿\U0001F000-\U0001F0FF]"  # common emoji ranges
 )
 _WORKING_HOURS_RE = re.compile(r"\b\d{1,2}:\d{2}\s*(am|pm)?\s*(to|-|–)\s*\d{1,2}:\d{2}\s*(am|pm)?", re.IGNORECASE)
+_URL_RE = re.compile(r"https?://\S+|maps\.app\.goo\.gl\S*", re.IGNORECASE)
+_PHONE_RE = re.compile(r"(?:\+?\d[\d\-\s]{7,}\d)")
+_LABELED_FIELD_RE = re.compile(
+    r"\b(shop location|warehouse location|warehouse|mobile|land ?line|address|working hours|business hours|"
+    r"branch|showroom)\s*:", re.IGNORECASE,
+)
 
 
 def _looks_like_auto_reply_template(message: str) -> bool:
     lines = [ln for ln in message.split("\n") if ln.strip()]
-    if len(lines) < 3:
-        return False
     emoji_lines = sum(1 for ln in lines if _EMOJI_BULLET_RE.search(ln))
     has_working_hours = bool(_WORKING_HOURS_RE.search(message))
-    has_url = "http://" in message or "https://" in message or "maps.app.goo.gl" in message
-    # Multiple emoji-led lines plus either working hours or a link is the
-    # hallmark of a WhatsApp Business auto-reply template, not a real typed
-    # message - a genuine customer enquiry essentially never has this shape.
-    return emoji_lines >= 2 and (has_working_hours or has_url)
+    urls = _URL_RE.findall(message)
+    phones = _PHONE_RE.findall(message)
+    labeled_fields = _LABELED_FIELD_RE.findall(message)
+
+    # Original shape: multiple emoji-led lines plus hours or a link.
+    if len(lines) >= 3 and emoji_lines >= 2 and (has_working_hours or urls):
+        return True
+
+    # No-emoji business-card shape: two or more of {URLs, phone numbers,
+    # labeled contact fields} clustered in one message - e.g. a company
+    # name/address/multiple phone numbers/multiple map links all in one
+    # block, with no emoji at all (real false positive: "AL ITLALA
+    # BUILDING MATERIALS ... SHOP LOCATION ... WAREHOUSE LOCATION ...
+    # MOBILE: ... LAND LINE: ..." - bold labels, two links, two phone
+    # numbers, zero emoji).
+    signal_count = sum([len(urls) >= 2, len(phones) >= 2, len(labeled_fields) >= 2])
+    if signal_count >= 1 and (len(urls) + len(phones) + len(labeled_fields)) >= 3:
+        return True
+
+    return False
 
 
 def is_auto_reply(message: str) -> bool:
