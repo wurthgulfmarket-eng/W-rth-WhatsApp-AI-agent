@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse
 
 from config import config
 from ai.agent import generate_reply, generate_image_reply, try_extract_company_name, is_auto_reply, is_company_change_signal
+from ai.lead_verifier import verify_is_lead
 from dashboard import router as dashboard_router
 from privacy_policy import PRIVACY_POLICY_HTML
 from sheets.sheets_client import find_rep_for_company, find_rep_for_company_with_region_fallback, find_rep_for_phone, is_known_rep_phone
@@ -498,6 +499,12 @@ def handle_customer_message(phone: str, text: str):
                 "company_name": rep["company_name"], "rep_name": rep["rep_name"],
                 "rep_phone": rep["rep_phone"], "rep_email": rep["rep_email"],
             }, history=history)
+            if is_lead and not verify_is_lead(text):
+                # Head of WhatsApp Replies overruled the lead call - this
+                # doesn't cancel the separate "new company signed up"
+                # notification below (still fires if genuinely not an
+                # auto-reply), just drops the lead-priority framing.
+                is_lead, priority = False, None
             escalate = is_lead or not is_auto_reply(text)
             conversation_id = _send(phone, reply, escalated=escalate)
             if escalate and conversation_id is not None:
@@ -531,6 +538,14 @@ def handle_customer_message(phone: str, text: str):
 
     history = store.get_recent_history(phone, limit=6)
     reply, escalate, priority = generate_reply(text, rep, history=history)
+
+    if escalate and not verify_is_lead(text):
+        # Head of WhatsApp Replies second-opinion check - only ever
+        # downgrades a lead call already made, never invents one. Grounded
+        # in real examples (genuine leads + dashboard-confirmed false
+        # positives), so it improves as more false positives get marked,
+        # unlike the fixed regex/phrase-list approach.
+        escalate, priority = False, None
 
     if escalate:
         reply += "\n\nI've flagged this for your sales representative to follow up personally."

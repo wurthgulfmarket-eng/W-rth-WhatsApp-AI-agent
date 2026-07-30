@@ -142,6 +142,19 @@ def _init_schema():
             );
             CREATE INDEX IF NOT EXISTS idx_rep_replies_lead ON rep_replies (lead_id);
             CREATE INDEX IF NOT EXISTS idx_rep_replies_rep_phone ON rep_replies (rep_phone);
+
+            ALTER TABLE leads ADD COLUMN IF NOT EXISTS false_positive INTEGER NOT NULL DEFAULT 0;
+
+            CREATE TABLE IF NOT EXISTS lead_false_positives (
+                id SERIAL PRIMARY KEY,
+                lead_id INTEGER NOT NULL REFERENCES leads(id),
+                phone TEXT NOT NULL,
+                enquiry_text TEXT NOT NULL,
+                marked_by TEXT,
+                marked_at TIMESTAMPTZ NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_lead_false_positives_lead ON lead_false_positives (lead_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS uniq_lead_false_positives_lead ON lead_false_positives (lead_id);
             """)
 
             # One-time backfill: group historical escalated messages into
@@ -799,7 +812,8 @@ def get_leads_list(start: str = None, end: str = None, page: int = 1, page_size:
                 query_params += [page_size, offset]
 
             cur.execute(f"""
-                SELECT l.last_activity_at,
+                SELECT l.id,
+                       l.last_activity_at,
                        l.phone,
                        COALESCE(cu.company_name, ''),
                        COALESCE(NULLIF(cu.rep_name, ''), 'Unassigned'),
@@ -815,6 +829,7 @@ def get_leads_list(start: str = None, end: str = None, page: int = 1, page_size:
                        ) AS enquiry_text,
                        l.status,
                        l.priority,
+                       l.false_positive,
                        attempts.any_success,
                        attempts.attempt_count,
                        attempts.attempt_summary,
@@ -844,7 +859,8 @@ def get_leads_list(start: str = None, end: str = None, page: int = 1, page_size:
                 ORDER BY l.last_activity_at DESC
                 {limit_clause}
             """, query_params)
-            keys = ["created_at", "phone", "company_name", "rep_name", "enquiry_text", "status", "priority",
+            keys = ["lead_id", "created_at", "phone", "company_name", "rep_name", "enquiry_text", "status",
+                     "priority", "false_positive",
                      "any_success", "attempt_count", "attempt_summary",
                      "rep_reply_text", "rep_reply_at", "rep_reply_method"]
             rows = [dict(zip(keys, row)) for row in cur.fetchall()]
@@ -856,6 +872,86 @@ def get_leads_list(start: str = None, end: str = None, page: int = 1, page_size:
                 else:
                     row["delivery_status"] = "failed"
             return rows, total
+    finally:
+        _put_conn(conn)
+
+
+def mark_lead_false_positive(lead_id: int, phone: str, enquiry_text: str, marked_by: str | None) -> bool:
+    """Records a lead as a confirmed false positive (a WhatsApp auto-reply
+    or similar that was incorrectly escalated), for the "Mark as false
+    positive" dashboard action. Idempotent - marking the same lead twice
+    only inserts once (UNIQUE index on lead_id) and only flips
+    leads.false_positive on the call that actually inserted. Returns True
+    if this call newly marked it, False if it was already marked."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO lead_false_positives (lead_id, phone, enquiry_text, marked_by, marked_at) "
+                "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (lead_id) DO NOTHING RETURNING id",
+                (lead_id, phone, enquiry_text, marked_by, datetime.now(timezone.utc)),
+            )
+            inserted = cur.fetchone() is not None
+            if inserted:
+                cur.execute("UPDATE leads SET false_positive = 1 WHERE id = %s", (lead_id,))
+        conn.commit()
+        return inserted
+    finally:
+        _put_conn(conn)
+
+
+def get_recent_positive_lead_examples(limit: int) -> list[str]:
+    """Enquiry text of the most recent leads NOT marked as a false
+    positive - the "genuine lead" half of the Head-of-Replies few-shot
+    example bank. Blank enquiry text is excluded (not useful as an
+    example)."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COALESCE(
+                    (SELECT in_msg.message FROM conversations in_msg
+                     WHERE in_msg.phone = l.phone AND in_msg.direction = 'in'
+                       AND in_msg.id < l.first_conversation_id
+                     ORDER BY in_msg.id DESC LIMIT 1),
+                    ''
+                ) AS enquiry_text
+                FROM leads l
+                WHERE l.false_positive = 0
+                ORDER BY l.last_activity_at DESC
+                LIMIT %s
+            """, (limit,))
+            return [row[0] for row in cur.fetchall() if row[0]]
+    finally:
+        _put_conn(conn)
+
+
+def get_recent_negative_lead_examples(limit: int) -> list[str]:
+    """Enquiry text of the most recently marked false positives - the
+    "auto-reply that slipped through" half of the Head-of-Replies few-shot
+    example bank."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT enquiry_text FROM lead_false_positives ORDER BY marked_at DESC LIMIT %s",
+                (limit,),
+            )
+            return [row[0] for row in cur.fetchall() if row[0]]
+    finally:
+        _put_conn(conn)
+
+
+def count_negative_lead_examples() -> int:
+    """Cheap count used to gate the Head-of-Replies call - see
+    config.LEAD_VERIFIER_MIN_NEGATIVE_EXAMPLES. Before enough real false
+    positives have been marked, the Head has nothing to learn from and
+    stays dormant (verify_is_lead short-circuits to True)."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM lead_false_positives")
+            return cur.fetchone()[0]
     finally:
         _put_conn(conn)
 

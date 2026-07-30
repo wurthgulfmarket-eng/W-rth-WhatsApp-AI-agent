@@ -26,6 +26,16 @@ services:
         value: google/gemma-4-26b-a4b-it:free
       - key: OPENROUTER_VISION_FALLBACK_MODELS
         value: "nvidia/nemotron-nano-12b-v2-vl:free,google/gemma-4-31b-it:free"
+      - key: LEAD_VERIFIER_MODEL
+        value: ""
+      - key: LEAD_VERIFIER_FALLBACK_MODELS
+        value: ""
+      - key: LEAD_VERIFIER_MIN_NEGATIVE_EXAMPLES
+        value: "3"
+      - key: LEAD_VERIFIER_MAX_POSITIVE_EXAMPLES
+        value: "6"
+      - key: LEAD_VERIFIER_MAX_NEGATIVE_EXAMPLES
+        value: "6"
       - key: GROQ_API_KEY
         sync: false
       - key: GROQ_TRANSCRIPTION_MODEL

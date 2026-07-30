@@ -56,6 +56,20 @@ class Config:
     ))
     OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
+    # "Head of WhatsApp Replies" - a second-opinion AI call that can
+    # downgrade (never upgrade) a lead call already made by generate_reply().
+    # Defaults to reusing the same text model/fallback chain unless
+    # overridden. See ai/lead_verifier.py.
+    LEAD_VERIFIER_MODEL = os.getenv("LEAD_VERIFIER_MODEL", "") or OPENROUTER_MODEL
+    LEAD_VERIFIER_FALLBACK_MODELS = _split_csv(os.getenv("LEAD_VERIFIER_FALLBACK_MODELS", "")) or OPENROUTER_FALLBACK_MODELS
+    # Below this many confirmed false-positive examples, the Head has
+    # nothing real to learn from yet and stays dormant (verify_is_lead
+    # returns True unconditionally) - activates automatically once enough
+    # have been marked on the dashboard, no manual "enable" step needed.
+    LEAD_VERIFIER_MIN_NEGATIVE_EXAMPLES = int(os.getenv("LEAD_VERIFIER_MIN_NEGATIVE_EXAMPLES", "3"))
+    LEAD_VERIFIER_MAX_POSITIVE_EXAMPLES = int(os.getenv("LEAD_VERIFIER_MAX_POSITIVE_EXAMPLES", "6"))
+    LEAD_VERIFIER_MAX_NEGATIVE_EXAMPLES = int(os.getenv("LEAD_VERIFIER_MAX_NEGATIVE_EXAMPLES", "6"))
+
     # Groq (voice note transcription) - OpenRouter's chat models don't do
     # audio transcription, so voice notes need a dedicated speech-to-text
     # step before the transcribed text can go through the normal reply/

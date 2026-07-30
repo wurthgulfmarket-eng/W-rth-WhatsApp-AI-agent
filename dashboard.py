@@ -44,6 +44,16 @@ def _is_logged_in(request: Request) -> bool:
         return False
 
 
+def _logged_in_user(request: Request) -> str | None:
+    cookie = request.cookies.get(SESSION_COOKIE_NAME)
+    if not cookie:
+        return None
+    try:
+        return _serializer().loads(cookie, max_age=SESSION_MAX_AGE_SECONDS).get("user")
+    except (BadSignature, SignatureExpired):
+        return None
+
+
 def _default_date_range():
     end = date.today()
     start = end - timedelta(days=30)
@@ -81,6 +91,15 @@ def logout():
     resp = RedirectResponse(url="/dashboard/login", status_code=303)
     resp.delete_cookie(SESSION_COOKIE_NAME)
     return resp
+
+
+@router.post("/dashboard/leads/{lead_id}/mark-false-positive")
+def mark_false_positive(lead_id: int, request: Request, phone: str = Form(""), enquiry_text: str = Form(""),
+                         start: str = Form(""), end: str = Form("")):
+    if not _is_logged_in(request):
+        return RedirectResponse(url="/dashboard/login", status_code=303)
+    store.mark_lead_false_positive(lead_id, phone, enquiry_text, marked_by=_logged_in_user(request))
+    return RedirectResponse(url=f"/dashboard?start={start}&end={end}", status_code=303)
 
 
 _TRANSCRIPT_PAGE_SIZE = 20
@@ -172,7 +191,7 @@ def export_excel(request: Request, start: str = "", end: str = ""):
         ws4.column_dimensions[col_letter].width = width
 
     ws5 = wb.create_sheet("Lead Details")
-    ws5.append(["Timestamp (UTC)", "Phone", "Company", "Sales Rep", "Customer Enquiry", "Priority", "Status", "Delivery", "Rep Response", "Response Confidence"])
+    ws5.append(["Timestamp (UTC)", "Phone", "Company", "Sales Rep", "Customer Enquiry", "Priority", "Status", "Delivery", "Rep Response", "Response Confidence", "Marked False Positive"])
     all_leads_list, _ = store.get_leads_list(start, end)  # page_size=None -> every lead
     for row in all_leads_list:
         response_confidence = {"context_match": "Confirmed", "fallback_most_recent": "Best guess"}.get(row.get("rep_reply_method"), "")
@@ -180,8 +199,9 @@ def export_excel(request: Request, start: str = "", end: str = ""):
             str(row["created_at"]), row["phone"], row["company_name"], row["rep_name"], row["enquiry_text"],
             (row.get("priority") or "").title(), row["status"], row["delivery_status"],
             row.get("rep_reply_text") or "", response_confidence,
+            "Yes" if row.get("false_positive") else "No",
         ])
-    for col_letter, width in zip("ABCDEFGHIJ", [26, 16, 24, 20, 60, 10, 10, 14, 40, 16]):
+    for col_letter, width in zip("ABCDEFGHIJK", [26, 16, 24, 20, 60, 10, 10, 14, 40, 16, 16]):
         ws5.column_dimensions[col_letter].width = width
 
     ws6 = wb.create_sheet("Rep Replies")
@@ -247,6 +267,10 @@ def _priority_pill(priority: str | None) -> str:
         return '<span class="muted">-</span>'
     label = _PRIORITY_PILL_LABELS.get(priority, priority)
     return f'<span class="pill priority-{_esc(priority)}">{label}</span>'
+
+
+def _false_positive_pill() -> str:
+    return '<span class="pill fp">Marked not-a-lead</span>'
 
 
 def _rep_reply_cell(reply_text: str | None, reply_at, method: str | None) -> str:
@@ -344,8 +368,20 @@ def _render_dashboard_html(start, end, stats, daily, customers, customers_total,
         </tr>""" for r in leads_summary
     ) or "<tr><td colspan='5' class='muted'>No leads in this range</td></tr>"
 
+    def _false_positive_action_cell(l) -> str:
+        if l.get("false_positive"):
+            return _false_positive_pill()
+        return f"""<form method="post" action="/dashboard/leads/{l['lead_id']}/mark-false-positive" \
+onsubmit="return confirm('Mark this as NOT a real lead? This helps train the Head of WhatsApp Replies.');">
+            <input type="hidden" name="phone" value="{_esc(l['phone'])}">
+            <input type="hidden" name="enquiry_text" value="{_esc(l['enquiry_text'])}">
+            <input type="hidden" name="start" value="{start}">
+            <input type="hidden" name="end" value="{end}">
+            <button type="submit" class="btn-fp">Mark as false positive</button>
+        </form>"""
+
     leads_list_rows = "".join(
-        f"""<tr>
+        f"""<tr{' style="opacity:0.55"' if l.get('false_positive') else ''}>
             <td>{_fmt_ts(l['created_at'])}</td>
             <td>{_esc(l['company_name']) or _esc(l['phone'])}</td>
             <td>{_esc(l['rep_name'])}</td>
@@ -354,8 +390,9 @@ def _render_dashboard_html(start, end, stats, daily, customers, customers_total,
             <td>{_status_pill(l['status'])}</td>
             <td>{_delivery_pill(l['delivery_status'], l.get('attempt_summary') or '')}</td>
             <td>{_rep_reply_cell(l.get('rep_reply_text'), l.get('rep_reply_at'), l.get('rep_reply_method'))}</td>
+            <td>{_false_positive_action_cell(l)}</td>
         </tr>""" for l in leads_list
-    ) or "<tr><td colspan='8' class='muted'>No leads in this range</td></tr>"
+    ) or "<tr><td colspan='9' class='muted'>No leads in this range</td></tr>"
 
     _CONFIDENCE_LABELS = {"context_match": "Confirmed", "fallback_most_recent": "Best guess", "unresolved": "Unresolved"}
     rep_replies_rows = "".join(
@@ -492,6 +529,9 @@ def _render_dashboard_html(start, end, stats, daily, customers, customers_total,
   .pill.priority-high {{ background: #fdeaec; color: #c8102e; }}
   .pill.priority-medium {{ background: #fff4e5; color: #a85d00; }}
   .pill.priority-low {{ background: #f0f0f0; color: #888; }}
+  .pill.fp {{ background: #f0f0f0; color: #888; }}
+  .btn-fp {{ background: none; border: 1px solid #ccc; color: #666; font-size: 0.78em; padding: 3px 8px; border-radius: 4px; cursor: pointer; white-space: nowrap; }}
+  .btn-fp:hover {{ background: #f5f5f5; border-color: #999; }}
   .chat-window {{ max-height: 500px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }}
   .bubble {{ max-width: 85%; padding: 8px 12px; border-radius: 10px; font-size: 0.9em; }}
   .bubble.in {{ align-self: flex-start; background: #eee; }}
@@ -555,7 +595,7 @@ request, or an urgent issue, and flagged for the assigned sales rep to follow up
   <div class="panel">
     <h2>Recent leads ({leads_list_total})</h2>
     <table>
-      <tr><th>When</th><th>Customer</th><th>Rep</th><th>Enquiry</th><th>Priority</th><th>Status</th><th>Delivery</th><th>Rep Response</th></tr>
+      <tr><th>When</th><th>Customer</th><th>Rep</th><th>Enquiry</th><th>Priority</th><th>Status</th><th>Delivery</th><th>Rep Response</th><th>Action</th></tr>
       {leads_list_rows}
     </table>
     {leads_list_pagination_html}
