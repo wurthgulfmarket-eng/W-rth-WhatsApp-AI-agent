@@ -453,6 +453,21 @@ _DEFERRING_REPLY_PATTERNS = [
 ]
 _DEFERRING_REPLY_RE = re.compile("|".join(_DEFERRING_REPLY_PATTERNS), re.IGNORECASE)
 
+# A genuine question/request ("can you give me price please", "how much is
+# this", "do you have this in stock") is not a company name, but it's
+# multi-word and within the 2-80 char bound, so it would otherwise sail
+# straight through to `return text` below (real bug: "can you give me price
+# please" got stored as a customer's company_name, corrupting the escalation
+# alert and rep lookup for that customer going forward). Matched as
+# whole-message lead-in phrases/question words, not a substring, so it
+# doesn't reject a real company name that happens to contain one of these
+# words (e.g. "Can-Do Trading").
+_QUESTION_LIKE_RE = re.compile(
+    r"^(can|could|would|will|do|does|did|is|are|may|please|how|what|when|where|why|"
+    r"who|which)(\s+\w|$)|\?$",
+    re.IGNORECASE,
+)
+
 
 def try_extract_company_name(message: str) -> str | None:
     """
@@ -473,6 +488,8 @@ def try_extract_company_name(message: str) -> str | None:
     if text.lower() in _NON_COMPANY_PHRASES:
         return None
     if _DEFERRING_REPLY_RE.match(text.strip()):
+        return None
+    if _QUESTION_LIKE_RE.match(text.strip()):
         return None
     # A bare word with no company-like signal (letters only, no digits, no
     # multi-word structure, very short) is far more likely to be chit-chat
