@@ -102,6 +102,33 @@ def mark_false_positive(lead_id: int, request: Request, phone: str = Form(""), e
     return RedirectResponse(url=f"/dashboard?start={start}&end={end}", status_code=303)
 
 
+@router.post("/dashboard/conversations/{conversation_id}/manual-escalate")
+def manual_escalate(conversation_id: int, request: Request, start: str = Form(""), end: str = Form(""),
+                     phone: str = Form(""), page: int = Form(1)):
+    """Manually escalates one inbound message the automated pipeline
+    didn't flag as a lead - for enquiries the AI genuinely can't verify on
+    its own (e.g. an image with no caption, an ambiguous one-word reply)
+    but a human reviewing the transcript can tell is a real lead. Reuses
+    the same lead + notification path as an automated escalation, so it
+    shows up on the Leads panel and sends the same rep/ops alert."""
+    if not _is_logged_in(request):
+        return RedirectResponse(url="/dashboard/login", status_code=303)
+
+    # Local import avoids a circular import - main.py imports dashboard.py
+    # to mount this router, so dashboard.py can't import main.py at module
+    # load time.
+    from main import _notify_escalation
+
+    msg = store.get_conversation_message(conversation_id)
+    if msg and msg["direction"] == "in" and not msg["escalated"]:
+        customer = store.get_customer(msg["phone"])
+        store.mark_conversation_escalated(conversation_id)
+        store.get_or_open_lead(msg["phone"], conversation_id, priority="medium")
+        _notify_escalation(conversation_id, msg["phone"], msg["message"], customer)
+
+    return RedirectResponse(url=f"/dashboard?start={start}&end={end}&phone={phone}&page={page}", status_code=303)
+
+
 _TRANSCRIPT_PAGE_SIZE = 20
 _CUSTOMERS_PAGE_SIZE = 20
 _LEADS_LIST_PAGE_SIZE = 20
@@ -442,12 +469,25 @@ onsubmit="return confirm('Mark this as NOT a real lead? This helps train the Hea
         </tr>""" for r in reps
     ) or "<tr><td colspan='4' class='muted'>No rep escalations in this range</td></tr>"
 
+    def _manual_escalate_action(m) -> str:
+        if m['direction'] != 'in' or m['escalated']:
+            return ""
+        return f"""<form method="post" action="/dashboard/conversations/{m['id']}/manual-escalate" \
+style="margin-top:4px" onsubmit="return confirm('Manually escalate this message to the rep/ops team?');">
+            <input type="hidden" name="start" value="{start}">
+            <input type="hidden" name="end" value="{end}">
+            <input type="hidden" name="phone" value="{_esc(selected_phone)}">
+            <input type="hidden" name="page" value="{transcript_page}">
+            <button type="submit" class="btn-fp">Escalate</button>
+        </form>"""
+
     if transcript is not None:
         if transcript:
             bubbles = "".join(
                 f"""<div class="bubble {'in' if m['direction'] == 'in' else 'out'} {'escalated' if m['escalated'] else ''}">
                     <div class="bubble-text">{_esc(m['message'])}</div>
                     <div class="bubble-time">{_fmt_ts(m['created_at'])}{' &middot; escalated' if m['escalated'] else ''}</div>
+                    {_manual_escalate_action(m)}
                 </div>""" for m in transcript
             )
         else:

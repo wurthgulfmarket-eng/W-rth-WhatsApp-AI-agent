@@ -290,6 +290,33 @@ def log_message(phone: str, direction: str, message: str, escalated: bool = Fals
         _put_conn(conn)
 
 
+def get_conversation_message(conversation_id: int):
+    """Single conversations row by id, for the dashboard's manual-escalate
+    action - it only has the conversation_id from the transcript view and
+    needs the phone/message text to escalate exactly that message."""
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, phone, direction, message, escalated FROM conversations WHERE id = %s",
+                (conversation_id,),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        _put_conn(conn)
+
+
+def mark_conversation_escalated(conversation_id: int):
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE conversations SET escalated = 1 WHERE id = %s", (conversation_id,))
+        conn.commit()
+    finally:
+        _put_conn(conn)
+
+
 def record_escalation_attempt(
     conversation_id: int | None, customer_phone: str, target_type: str, target_phone: str,
     target_name: str | None, message_type: str, template_name: str | None,
@@ -644,13 +671,13 @@ def get_conversation(phone: str, start: str = None, end: str = None, page: int =
 
             offset = max(page - 1, 0) * page_size
             cur.execute(f"""
-                SELECT direction, message, escalated, created_at
+                SELECT id, direction, message, escalated, created_at
                 FROM conversations
                 WHERE phone = %s {where}
                 ORDER BY id DESC
                 LIMIT %s OFFSET %s
             """, (phone, *params, page_size, offset))
-            keys = ["direction", "message", "escalated", "created_at"]
+            keys = ["id", "direction", "message", "escalated", "created_at"]
             rows = [dict(zip(keys, row)) for row in cur.fetchall()]
             rows.reverse()
             return rows, total
