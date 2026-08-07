@@ -364,7 +364,8 @@ def _process_image_message(phone: str, media_id: str, mime_type: str, caption: s
     except WhatsAppError as e:
         logger.warning("mark_as_read failed: %s", e)
 
-    store.log_message(phone, "in", f"[image]{(' ' + caption) if caption else ''}")
+    text_for_log = f"[image]{(' ' + caption) if caption else ''}"
+    store.log_message(phone, "in", text_for_log)
 
     if not media_id:
         _send(phone, "Sorry, I couldn't receive that image. Could you try sending it again?")
@@ -375,6 +376,40 @@ def _process_image_message(phone: str, media_id: str, mime_type: str, caption: s
         image_bytes = download_media(media_id)
 
         customer = store.get_customer(phone)
+        customer_was_new = customer is None
+
+        # First contact / no company on file yet -> try to recognize them,
+        # same as the text-message path (handle_customer_message) - an
+        # image-only enquiry from a brand-new/unmatched customer must still
+        # be escalatable, not silently skipped just because it arrived as a
+        # photo instead of text.
+        if not customer or not customer.get("company_name"):
+            rep = None
+            try:
+                rep = find_rep_for_phone(phone)
+            except Exception:
+                logger.exception("Phone-based rep lookup failed for %s", phone)
+
+            candidate = None
+            if not rep and caption:
+                candidate = try_extract_company_name(caption)
+                if candidate:
+                    try:
+                        rep = find_rep_for_company_with_region_fallback(candidate)
+                    except Exception:
+                        logger.exception("Sales rep lookup failed for candidate company '%s'", candidate)
+
+            if rep:
+                store.upsert_customer(phone, rep["company_name"], rep["rep_name"], rep["rep_phone"], rep["rep_email"])
+                customer = store.get_customer(phone)
+            elif candidate:
+                store.upsert_customer(phone, candidate)
+                customer = store.get_customer(phone)
+            elif customer_was_new:
+                store.upsert_customer(phone, "")
+                customer = store.get_customer(phone)
+                _notify_new_unmatched_lead(phone, text_for_log)
+
         rep = None
         if customer and customer.get("rep_name"):
             rep = {
@@ -384,8 +419,23 @@ def _process_image_message(phone: str, media_id: str, mime_type: str, caption: s
                 "rep_email": customer["rep_email"],
             }
 
-        reply = generate_image_reply(image_bytes, mime_type, rep, caption=caption)
-        _send(phone, reply)
+        reply, is_lead, priority = generate_image_reply(image_bytes, mime_type, rep, caption=caption)
+
+        if is_lead and not verify_is_lead(caption or text_for_log):
+            is_lead, priority = False, None
+
+        if is_lead:
+            reply += "\n\nI've flagged this for your sales representative to follow up personally."
+
+        conversation_id = _send(phone, reply, escalated=is_lead)
+
+        if is_lead and conversation_id is not None and is_auto_reply(caption or ""):
+            logger.warning("Suppressing escalation for %s - image caption looks like an auto-reply template", phone)
+            is_lead = False
+
+        if is_lead and conversation_id is not None:
+            store.get_or_open_lead(phone, conversation_id, priority=priority or "medium")
+            _notify_escalation(conversation_id, phone, text_for_log, customer)
     except Exception:
         logger.exception("Failed to handle image from %s", phone)
         _send(

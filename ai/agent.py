@@ -22,6 +22,19 @@ their sales representative for a proper look.
 you visually observe and suggest general categories.
 - Keep the reply concise (WhatsApp-length, a few short sentences).
 
+**Lead tagging (required on every reply):** after writing your reply, end it with exactly one tag on its own new \
+line, using the same criteria a text-based enquiry would: does this photo (plus any caption) show the customer \
+wants to buy, price, quote, or order this item, or is it just idle/uncertain curiosity?
+- {lead_tag_high} - ready to act now: asking for a price/quote on this item, wanting to order or buy it, a bulk \
+quantity, or an urgent need.
+- {lead_tag_medium} - clear interest in this specific item (e.g. "do you have this?", "what is this used for") but \
+not yet urgent or ready to commit.
+- {lead_tag_low} - mild/early curiosity about the item, no clear buying signal yet but still worth a rep's attention.
+Use {no_lead_tag} only if the photo is unrelated to any purchase interest (e.g. not a product at all, or the \
+caption is pure small talk with no product question). When in doubt, prefer tagging a lead over {no_lead_tag}.
+This tag is stripped before the customer sees your message, so it does not need to read naturally - just place it \
+on its own final line.
+
 Knowledge base context (possibly relevant product categories):
 {kb_context}
 
@@ -393,15 +406,24 @@ def generate_reply(customer_message: str, rep: dict | None, history: list = None
     return reply, is_lead, priority
 
 
-def generate_image_reply(image_bytes: bytes, mime_type: str, rep: dict | None, caption: str = "") -> str:
+def generate_image_reply(image_bytes: bytes, mime_type: str, rep: dict | None,
+                          caption: str = "") -> tuple[str, bool, str | None]:
     """Analyzes a customer-sent photo (e.g. of a product/part) using a
-    vision-capable OpenRouter model, grounded in the same knowledge base."""
+    vision-capable OpenRouter model, grounded in the same knowledge base.
+    Returns (reply_text, is_lead, priority), same contract as
+    generate_reply() - previously this only returned the reply text, so an
+    image-only enquiry (no accompanying text message) could never be
+    detected as a lead or escalated at all, regardless of buying intent."""
     query = caption.strip() or "product photo sent by customer"
     kb_chunks = kb_search(query, top_k=4)
 
     system_prompt = IMAGE_SYSTEM_PROMPT_TEMPLATE.format(
         kb_context=_format_kb_context(kb_chunks),
         rep_context=_format_rep_context(rep),
+        lead_tag_high=LEAD_TAG_HIGH,
+        lead_tag_medium=LEAD_TAG_MEDIUM,
+        lead_tag_low=LEAD_TAG_LOW,
+        no_lead_tag=NO_LEAD_TAG,
     )
 
     b64_image = base64.b64encode(image_bytes).decode("ascii")
@@ -418,8 +440,20 @@ def generate_image_reply(image_bytes: bytes, mime_type: str, rep: dict | None, c
         {"role": "user", "content": user_content},
     ]
 
-    return chat_completion(messages, model=config.OPENROUTER_VISION_MODEL,
-                            fallback_models=config.OPENROUTER_VISION_FALLBACK_MODELS)
+    raw_reply = chat_completion(messages, model=config.OPENROUTER_VISION_MODEL,
+                                 fallback_models=config.OPENROUTER_VISION_FALLBACK_MODELS)
+    reply, model_says_lead, model_priority = _strip_lead_tag(raw_reply)
+
+    query_text = caption.strip() or "[image] product photo sent by customer"
+    if is_auto_reply(query_text):
+        is_lead = False
+        priority = None
+    else:
+        is_lead = bool(model_says_lead) or needs_escalation(query_text)
+        priority = model_priority if is_lead else None
+        if is_lead and priority is None:
+            priority = "medium"
+    return reply, is_lead, priority
 
 
 # Casual greetings/filler that must never be treated as a candidate company
