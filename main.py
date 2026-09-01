@@ -567,13 +567,30 @@ def handle_customer_message(phone: str, text: str):
             store.upsert_customer(phone, candidate)
             customer = store.get_customer(phone)
         else:
-            if customer_was_new:
+            # No company recognized yet, but the message itself might be a
+            # general question we can just answer (store locations, hours,
+            # catalogue link, etc.) that doesn't need to know who they are -
+            # answering with a hardcoded "what's your company name?" for
+            # every unmatched first message meant a genuine question like
+            # "please send location" never got answered at all. Only fall
+            # back to asking for their company when the reply is actually a
+            # lead (buying intent that needs a rep's follow-up) or looks
+            # like it needs account-specific info the AI can't answer
+            # without a company on file.
+            reply, is_lead, priority = generate_reply(text, None)
+            if is_lead and not verify_is_lead(text):
+                is_lead, priority = False, None
+
+            if is_lead:
+                if customer_was_new:
+                    store.upsert_customer(phone, "")
+                    _notify_new_unmatched_lead(phone, text)
+                reply = (
+                    "Hi! Thanks for reaching out to W\u00fcrth UAE. Could you tell me your company name "
+                    "so I can connect you with the right details and your sales representative?"
+                )
+            elif customer_was_new:
                 store.upsert_customer(phone, "")
-                _notify_new_unmatched_lead(phone, text)
-            reply = (
-                "Hi! Thanks for reaching out to W\u00fcrth UAE. Could you tell me your company name "
-                "so I can connect you with the right details and your sales representative?"
-            )
             _send(phone, reply)
             return
 
