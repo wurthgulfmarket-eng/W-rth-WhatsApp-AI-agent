@@ -15,7 +15,10 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.responses import HTMLResponse
 
 from config import config
-from ai.agent import generate_reply, generate_image_reply, try_extract_company_name, is_auto_reply, is_company_change_signal
+from ai.agent import (
+    generate_reply, generate_image_reply, try_extract_company_name, is_auto_reply,
+    is_company_change_signal, try_extract_rep_outcome_signal,
+)
 from ai.lead_verifier import verify_is_lead
 from dashboard import router as dashboard_router
 from privacy_policy import PRIVACY_POLICY_HTML
@@ -286,6 +289,17 @@ def _process_rep_reply(rep_phone: str, text: str, message_id: str, context_id: s
     is_first_reply = store.is_first_reply_for_lead(lead_id)
     store.record_rep_reply(rep_phone, text, message_id, context_id, escalation_attempt_id, lead_id, method)
     logger.info("Recorded rep reply from %s (lead_id=%s, method=%s)", rep_phone, lead_id, method)
+
+    # Lightweight CRM shortcut: a rep can just text naturally ("WON 2500",
+    # "no answer, LOST") instead of opening the dashboard to log what
+    # happened with a lead. Silent/backend-only - never sends anything back
+    # to the rep beyond the existing first-reply acknowledgment below.
+    if lead_id is not None:
+        signal = try_extract_rep_outcome_signal(text)
+        if signal:
+            outcome, amount = signal
+            store.set_lead_outcome(lead_id, outcome, updated_by=f"rep:{rep_phone}", amount=amount)
+            logger.info("Rep %s reported outcome '%s' for lead_id=%s (amount=%s)", rep_phone, outcome, lead_id, amount)
 
     if is_first_reply:
         rep_name = store.get_rep_name_for_phone(rep_phone)

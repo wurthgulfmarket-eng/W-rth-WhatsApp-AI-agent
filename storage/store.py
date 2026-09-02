@@ -155,6 +155,23 @@ def _init_schema():
             );
             CREATE INDEX IF NOT EXISTS idx_lead_false_positives_lead ON lead_false_positives (lead_id);
             CREATE UNIQUE INDEX IF NOT EXISTS uniq_lead_false_positives_lead ON lead_false_positives (lead_id);
+
+            ALTER TABLE leads ADD COLUMN IF NOT EXISTS outcome TEXT NOT NULL DEFAULT 'new';
+            ALTER TABLE leads ADD COLUMN IF NOT EXISTS outcome_amount NUMERIC;
+            ALTER TABLE leads ADD COLUMN IF NOT EXISTS outcome_note TEXT;
+            ALTER TABLE leads ADD COLUMN IF NOT EXISTS outcome_updated_at TIMESTAMPTZ;
+            ALTER TABLE leads ADD COLUMN IF NOT EXISTS outcome_updated_by TEXT;
+
+            CREATE TABLE IF NOT EXISTS lead_outcome_history (
+                id SERIAL PRIMARY KEY,
+                lead_id INTEGER NOT NULL REFERENCES leads(id),
+                outcome TEXT NOT NULL,
+                amount NUMERIC,
+                note TEXT,
+                updated_by TEXT,
+                created_at TIMESTAMPTZ NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_lead_outcome_history_lead ON lead_outcome_history (lead_id);
             """)
 
             # One-time backfill: group historical escalated messages into
@@ -857,6 +874,10 @@ def get_leads_list(start: str = None, end: str = None, page: int = 1, page_size:
                        l.status,
                        l.priority,
                        l.false_positive,
+                       l.outcome,
+                       l.outcome_amount,
+                       l.outcome_note,
+                       l.outcome_updated_at,
                        attempts.any_success,
                        attempts.attempt_count,
                        attempts.attempt_summary,
@@ -888,6 +909,7 @@ def get_leads_list(start: str = None, end: str = None, page: int = 1, page_size:
             """, query_params)
             keys = ["lead_id", "created_at", "phone", "company_name", "rep_name", "enquiry_text", "status",
                      "priority", "false_positive",
+                     "outcome", "outcome_amount", "outcome_note", "outcome_updated_at",
                      "any_success", "attempt_count", "attempt_summary",
                      "rep_reply_text", "rep_reply_at", "rep_reply_method"]
             rows = [dict(zip(keys, row)) for row in cur.fetchall()]
@@ -923,6 +945,57 @@ def mark_lead_false_positive(lead_id: int, phone: str, enquiry_text: str, marked
                 cur.execute("UPDATE leads SET false_positive = 1 WHERE id = %s", (lead_id,))
         conn.commit()
         return inserted
+    finally:
+        _put_conn(conn)
+
+
+_VALID_LEAD_OUTCOMES = {"new", "contacted", "quoted", "won", "lost"}
+
+
+def set_lead_outcome(lead_id: int, outcome: str, updated_by: str | None,
+                      amount: float | None = None, note: str | None = None) -> bool:
+    """Updates the lead's current outcome stage (New/Contacted/Quoted/Won/
+    Lost) and appends a row to lead_outcome_history so a later correction
+    (e.g. a mistaken "Won" walked back to "Contacted") never destroys the
+    audit trail - mirrors mark_lead_false_positive's insert-then-flip
+    pattern, but appends every time rather than only once. Returns False
+    without touching anything if outcome isn't a recognized stage, so a bad
+    WhatsApp-keyword parse (see ai.agent.try_extract_rep_outcome_signal)
+    can never corrupt the column."""
+    if outcome not in _VALID_LEAD_OUTCOMES:
+        logger.warning("Rejected invalid lead outcome %r for lead_id=%s", outcome, lead_id)
+        return False
+    conn = _get_conn()
+    try:
+        now = datetime.now(timezone.utc)
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE leads SET outcome = %s, outcome_amount = %s, outcome_note = %s, "
+                "outcome_updated_at = %s, outcome_updated_by = %s WHERE id = %s",
+                (outcome, amount, note, now, updated_by, lead_id),
+            )
+            cur.execute(
+                "INSERT INTO lead_outcome_history (lead_id, outcome, amount, note, updated_by, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (lead_id, outcome, amount, note, updated_by, now),
+            )
+        conn.commit()
+        return True
+    finally:
+        _put_conn(conn)
+
+
+def get_lead_outcome_history(lead_id: int) -> list:
+    """Full outcome timeline for one lead, oldest first."""
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT outcome, amount, note, updated_by, created_at FROM lead_outcome_history "
+                "WHERE lead_id = %s ORDER BY created_at ASC",
+                (lead_id,),
+            )
+            return [dict(row) for row in cur.fetchall()]
     finally:
         _put_conn(conn)
 

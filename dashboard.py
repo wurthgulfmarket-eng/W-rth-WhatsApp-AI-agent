@@ -129,6 +129,33 @@ def manual_escalate(conversation_id: int, request: Request, start: str = Form(""
     return RedirectResponse(url=f"/dashboard?start={start}&end={end}&phone={phone}&page={page}", status_code=303)
 
 
+_VALID_OUTCOMES = {"new", "contacted", "quoted", "won", "lost"}
+
+
+@router.post("/dashboard/leads/{lead_id}/set-outcome")
+def set_outcome(lead_id: int, request: Request, outcome: str = Form(""), amount: str = Form(""),
+                 note: str = Form(""), start: str = Form(""), end: str = Form(""), lpage: int = Form(1)):
+    """Lets an admin log what happened with a lead after it was sent to a
+    rep (New/Contacted/Quoted/Won/Lost) - the dashboard-side counterpart to
+    the WhatsApp-keyword shortcut a rep can also use (see
+    ai.agent.try_extract_rep_outcome_signal). Rejects an outcome value
+    outside the known set rather than trusting the form blindly."""
+    if not _is_logged_in(request):
+        return RedirectResponse(url="/dashboard/login", status_code=303)
+
+    if outcome in _VALID_OUTCOMES:
+        parsed_amount = None
+        if outcome == "won" and amount.strip():
+            try:
+                parsed_amount = float(amount.strip().replace(",", ""))
+            except ValueError:
+                parsed_amount = None
+        store.set_lead_outcome(lead_id, outcome, updated_by=_logged_in_user(request),
+                                amount=parsed_amount, note=note.strip() or None)
+
+    return RedirectResponse(url=f"/dashboard?start={start}&end={end}&lpage={lpage}", status_code=303)
+
+
 _TRANSCRIPT_PAGE_SIZE = 20
 _CUSTOMERS_PAGE_SIZE = 20
 _LEADS_LIST_PAGE_SIZE = 20
@@ -300,6 +327,16 @@ def _false_positive_pill() -> str:
     return '<span class="pill fp">Marked not-a-lead</span>'
 
 
+_OUTCOME_PILL_LABELS = {"new": "New", "contacted": "Contacted", "quoted": "Quoted", "won": "Won", "lost": "Lost"}
+
+
+def _outcome_pill(outcome: str, amount) -> str:
+    label = _OUTCOME_PILL_LABELS.get(outcome, outcome or "New")
+    if outcome == "won" and amount:
+        label += f" (AED {amount:,.0f})"
+    return f'<span class="pill outcome-{_esc(outcome or "new")}">{_esc(label)}</span>'
+
+
 def _rep_reply_cell(reply_text: str | None, reply_at, method: str | None) -> str:
     if not reply_text:
         return '<span class="muted">No reply yet</span>'
@@ -407,6 +444,22 @@ onsubmit="return confirm('Mark this as NOT a real lead? This helps train the Hea
             <button type="submit" class="btn-fp">Mark as false positive</button>
         </form>"""
 
+    def _outcome_cell(l) -> str:
+        current = l.get("outcome") or "new"
+        options = "".join(
+            f'<option value="{v}"{" selected" if v == current else ""}>{label}</option>'
+            for v, label in _OUTCOME_PILL_LABELS.items()
+        )
+        return f"""{_outcome_pill(current, l.get('outcome_amount'))}
+        <form method="post" action="/dashboard/leads/{l['lead_id']}/set-outcome" style="margin-top:4px; display:flex; gap:4px;">
+            <input type="hidden" name="start" value="{start}">
+            <input type="hidden" name="end" value="{end}">
+            <input type="hidden" name="lpage" value="{leads_list_page}">
+            <select name="outcome" style="font-size:0.78em;">{options}</select>
+            <input type="text" name="amount" placeholder="AED (if won)" style="width:90px; font-size:0.78em;">
+            <button type="submit" class="btn-fp">Update</button>
+        </form>"""
+
     leads_list_rows = "".join(
         f"""<tr{' style="opacity:0.55"' if l.get('false_positive') else ''}>
             <td>{_fmt_ts(l['created_at'])}</td>
@@ -417,9 +470,10 @@ onsubmit="return confirm('Mark this as NOT a real lead? This helps train the Hea
             <td>{_status_pill(l['status'])}</td>
             <td>{_delivery_pill(l['delivery_status'], l.get('attempt_summary') or '')}</td>
             <td>{_rep_reply_cell(l.get('rep_reply_text'), l.get('rep_reply_at'), l.get('rep_reply_method'))}</td>
+            <td>{_outcome_cell(l)}</td>
             <td>{_false_positive_action_cell(l)}</td>
         </tr>""" for l in leads_list
-    ) or "<tr><td colspan='9' class='muted'>No leads in this range</td></tr>"
+    ) or "<tr><td colspan='10' class='muted'>No leads in this range</td></tr>"
 
     _CONFIDENCE_LABELS = {"context_match": "Confirmed", "fallback_most_recent": "Best guess", "unresolved": "Unresolved"}
     rep_replies_rows = "".join(
@@ -570,6 +624,11 @@ style="margin-top:4px" onsubmit="return confirm('Manually escalate this message 
   .pill.priority-medium {{ background: #fff4e5; color: #a85d00; }}
   .pill.priority-low {{ background: #f0f0f0; color: #888; }}
   .pill.fp {{ background: #f0f0f0; color: #888; }}
+  .pill.outcome-new {{ background: #f0f0f0; color: #888; }}
+  .pill.outcome-contacted {{ background: #e8f0fe; color: #1a56c8; }}
+  .pill.outcome-quoted {{ background: #fff4e5; color: #a85d00; }}
+  .pill.outcome-won {{ background: #e6f4ea; color: #1a7f37; }}
+  .pill.outcome-lost {{ background: #fdeaec; color: #c8102e; }}
   .btn-fp {{ background: none; border: 1px solid #ccc; color: #666; font-size: 0.78em; padding: 3px 8px; border-radius: 4px; cursor: pointer; white-space: nowrap; }}
   .btn-fp:hover {{ background: #f5f5f5; border-color: #999; }}
   .chat-window {{ max-height: 500px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }}
@@ -635,7 +694,7 @@ request, or an urgent issue, and flagged for the assigned sales rep to follow up
   <div class="panel">
     <h2>Recent leads ({leads_list_total})</h2>
     <table>
-      <tr><th>When</th><th>Customer</th><th>Rep</th><th>Enquiry</th><th>Priority</th><th>Status</th><th>Delivery</th><th>Rep Response</th><th>Action</th></tr>
+      <tr><th>When</th><th>Customer</th><th>Rep</th><th>Enquiry</th><th>Priority</th><th>Status</th><th>Delivery</th><th>Rep Response</th><th>Outcome</th><th>Action</th></tr>
       {leads_list_rows}
     </table>
     {leads_list_pagination_html}

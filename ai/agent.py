@@ -200,6 +200,51 @@ def is_company_change_signal(message: str) -> bool:
     lowered = message.lower()
     return any(signal in lowered for signal in _COMPANY_CHANGE_SIGNALS)
 
+
+# Lets a sales rep report what happened with a lead just by texting
+# naturally in their WhatsApp reply ("Called them, they said WON at 2500
+# great deal!") instead of needing to open the dashboard - a lightweight,
+# optional shortcut alongside the dashboard's own outcome dropdown. Matched
+# as whole words anywhere in the message (not just a prefix), since reps
+# won't always lead with the keyword. Priority order when more than one
+# keyword appears in the same reply: a rep confirming a deal actually
+# closed ("won") should never be shadowed by an earlier, now-superseded
+# mention of "contacted" in the same message.
+_REP_OUTCOME_KEYWORDS = [
+    ("won", re.compile(r"\bwon\b", re.IGNORECASE)),
+    ("lost", re.compile(r"\blost\b", re.IGNORECASE)),
+    ("quoted", re.compile(r"\bquoted\b", re.IGNORECASE)),
+    ("contacted", re.compile(r"\bcontacted\b", re.IGNORECASE)),
+]
+# A number that looks like a deal amount - optional "AED"/currency prefix or
+# suffix, digits with optional thousands separators/decimals. Deliberately
+# loose (no currency required) since reps will just type "2500" - a rep
+# reply is never a machine-generated string we need to be strict about.
+_AMOUNT_RE = re.compile(
+    r"(?:aed\s*)?(\d[\d,]*(?:\.\d+)?)\s*(?:aed)?", re.IGNORECASE,
+)
+
+
+def try_extract_rep_outcome_signal(message: str) -> tuple[str, float | None] | None:
+    """Scans a sales rep's WhatsApp reply for an outcome keyword (won/lost/
+    quoted/contacted) anywhere in the text. Returns (outcome, amount) where
+    amount is only ever populated for "won" (parsed from the first
+    plausible number in the message, if any), or None if no keyword
+    matched at all - the common case for a normal reply, a total no-op."""
+    for outcome, pattern in _REP_OUTCOME_KEYWORDS:
+        if pattern.search(message):
+            amount = None
+            if outcome == "won":
+                amount_match = _AMOUNT_RE.search(message)
+                if amount_match:
+                    try:
+                        amount = float(amount_match.group(1).replace(",", ""))
+                    except ValueError:
+                        amount = None
+            return outcome, amount
+    return None
+
+
 # The model appends one of these tags at the very end of its reply so we can
 # reliably detect lead intent - keyword matching alone missed cases like
 # "do u have industrial racks" (real product interest, no matching keyword).
