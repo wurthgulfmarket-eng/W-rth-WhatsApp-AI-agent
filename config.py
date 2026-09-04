@@ -50,9 +50,16 @@ class Config:
     # https://openrouter.ai/api/v1/models for currently-live models with
     # "image" in architecture.input_modalities and update these.
     OPENROUTER_VISION_MODEL = os.getenv("OPENROUTER_VISION_MODEL", "google/gemma-4-26b-a4b-it:free")
+    # nvidia/nemotron-nano-12b-v2-vl:free (a previous fallback here) went
+    # dead/404 at some point without anyone noticing, silently shrinking the
+    # real fallback chain - real-world outage: all of that day's live
+    # vision models hit OpenRouter's shared free-tier rate limit within the
+    # same second, exhausting every candidate. Spread across more
+    # providers (Google, Nvidia, MiniMax) so a simultaneous rate-limit hit
+    # across all of them is far less likely.
     OPENROUTER_VISION_FALLBACK_MODELS = _split_csv(os.getenv(
         "OPENROUTER_VISION_FALLBACK_MODELS",
-        "nvidia/nemotron-nano-12b-v2-vl:free,google/gemma-4-31b-it:free",
+        "google/gemma-4-31b-it:free,nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free,minimax/minimax-m3:free",
     ))
     OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
