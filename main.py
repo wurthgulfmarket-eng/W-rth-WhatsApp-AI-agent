@@ -216,13 +216,16 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
     # this number as someone's Rep Phone, that's authoritative - always
     # treat it as a rep, even if it also has a stray `customers` row (a rep
     # can end up with one from an earlier message before ever being
-    # recognized as staff). The weaker evidence-based signal (we've sent
-    # this number an escalation before, but it's NOT in the sheet as a rep
-    # today) is treated more cautiously: only take the rep path there via
-    # an exact swipe-to-reply match, or if the number isn't ALSO a known
-    # customer - if that one's ambiguous, default to the customer pipeline,
-    # since silently misfiling a real customer's message is worse than a
-    # rep occasionally getting an AI reply to their own text.
+    # recognized as staff). The same applies to the evidence-based signal
+    # (we've sent THIS number a real rep escalation alert before, per
+    # escalation_attempts) - once we have that history, it's just as
+    # authoritative as a sheet listing, so it's trusted unconditionally too.
+    # (Real bug this fixed: a confirmed rep - already notified once - typed
+    # a fresh "Thank you" with no swipe-to-reply context on their next
+    # message; the old logic required either an exact context match or no
+    # stray customer row to trust find_rep_matches_for_phone, so this
+    # message fell through to the customer AI pipeline, got misclassified
+    # as a lead, and fuzzy-matched to a completely different, wrong rep.)
     context_id = message.get("context", {}).get("id")
     try:
         is_sheet_rep = is_known_rep_phone(from_number)
@@ -230,12 +233,7 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
         is_sheet_rep = False
         logger.exception("Sheet-based rep phone lookup failed for %s", from_number)
 
-    if is_sheet_rep:
-        is_rep_number = True
-    else:
-        is_rep_number = store.find_rep_matches_for_phone(from_number) and (
-            context_id is not None or store.get_customer(from_number) is None
-        )
+    is_rep_number = is_sheet_rep or store.find_rep_matches_for_phone(from_number)
 
     if is_rep_number:
         if msg_type == "text":
