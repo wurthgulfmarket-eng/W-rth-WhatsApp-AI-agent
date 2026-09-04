@@ -178,8 +178,13 @@ def dashboard_page(request: Request, start: str = "", end: str = "", phone: str 
 
     stats = store.get_stats(start, end)
     daily = store.get_daily_counts(start, end)
+    outcome_breakdown = store.get_outcome_breakdown(start, end)
     customers, customers_total = store.get_customers_summary(start, end, page=cpage, page_size=_CUSTOMERS_PAGE_SIZE)
     leads_summary, leads_summary_total = store.get_leads_summary(start, end, page=spage, page_size=_LEADS_SUMMARY_PAGE_SIZE)
+    # Unpaginated top-10 for the bar chart - a separate call from the paginated
+    # table below it, since the chart always shows the leaderboard regardless
+    # of which table page is selected.
+    leads_summary_all, _ = store.get_leads_summary(start, end)
     leads_list, leads_list_total = store.get_leads_list(start, end, page=lpage, page_size=_LEADS_LIST_PAGE_SIZE)
     rep_replies = store.get_rep_replies_list(start, end)
     reps = store.get_reps_summary(start, end)
@@ -190,8 +195,8 @@ def dashboard_page(request: Request, start: str = "", end: str = "", phone: str 
     rep_transcript = store.get_rep_transcript(rep_phone, start, end) if rep_phone else None
 
     return HTMLResponse(_render_dashboard_html(
-        start, end, stats, daily, customers, customers_total, cpage,
-        leads_summary, leads_summary_total, spage, leads_list, leads_list_total, lpage,
+        start, end, stats, daily, outcome_breakdown, customers, customers_total, cpage,
+        leads_summary, leads_summary_total, spage, leads_summary_all, leads_list, leads_list_total, lpage,
         rep_replies, reps, phone, transcript, transcript_total, page, rep_phone, rep_transcript,
     ))
 
@@ -347,11 +352,13 @@ def _rep_reply_cell(reply_text: str | None, reply_at, method: str | None) -> str
 
 _BASE_STYLE = """
   * { box-sizing: border-box; }
-  body { font-family: -apple-system, Segoe UI, Arial, sans-serif; margin: 0; background: #f5f6f8; color: #1a1a1a; }
-  header { background: #c8102e; color: white; padding: 12px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  header img.logo { height: 28px; filter: brightness(0) invert(1); }
-  header h1 { margin: 0; font-size: 1.15em; flex: 1; min-width: 0; }
-  header a.logout { color: white; text-decoration: underline; font-size: 0.85em; white-space: nowrap; }
+  body { font-family: -apple-system, Segoe UI, Arial, sans-serif; margin: 0; background: #f7f7f9; color: #1a1a1a; }
+  header { background: #ffffff; color: #1a1a1a; padding: 14px 24px; display: flex; align-items: center; gap: 14px;
+           flex-wrap: wrap; border-bottom: 1px solid #eceef1; }
+  header img.logo { height: 26px; }
+  header h1 { margin: 0; font-size: 1.05em; font-weight: 700; flex: 1; min-width: 0; color: #1a1a1a; }
+  header a.logout { color: #6b7280; text-decoration: none; font-size: 0.85em; white-space: nowrap; font-weight: 600; }
+  header a.logout:hover { color: #CC0000; }
 """
 
 
@@ -373,8 +380,8 @@ def _render_login_html(error: str = "") -> str:
   h1 {{ font-size: 1.1em; text-align: center; margin: 0 0 20px 0; }}
   label {{ display: block; font-size: 0.85em; color: #555; margin-bottom: 4px; margin-top: 14px; }}
   input {{ width: 100%; padding: 10px 12px; border: 1px solid #ccc; border-radius: 6px; font-size: 1em; }}
-  button {{ width: 100%; margin-top: 20px; background: #c8102e; color: white; border: none; padding: 11px; border-radius: 6px; font-size: 1em; cursor: pointer; }}
-  .error {{ color: #c8102e; font-size: 0.85em; margin-top: 12px; text-align: center; }}
+  button {{ width: 100%; margin-top: 20px; background: #CC0000; color: white; border: none; padding: 11px; border-radius: 6px; font-size: 1em; cursor: pointer; }}
+  .error {{ color: #CC0000; font-size: 0.85em; margin-top: 12px; text-align: center; }}
 </style>
 </head>
 <body>
@@ -410,8 +417,211 @@ def _render_pagination(base_params: dict, page_param: str, current_page: int, to
     return f'<div class="pagination">{"".join(links)}</div>'
 
 
-def _render_dashboard_html(start, end, stats, daily, customers, customers_total, customers_page,
-                            leads_summary, leads_summary_total, leads_summary_page,
+# ===== Chart building blocks =====
+# All charts are hand-built inline SVG (no external chart library, keeping
+# this app dependency-free) following the dataviz skill's method: form
+# picked by the data's job, color assigned last, categorical hues from a
+# validated palette (see the module-level comment above _OUTCOME_COLORS),
+# thin marks, a surface gap between touching marks, direct labels used
+# sparingly, and a legend whenever 2+ series are on screen.
+
+# Brand accent - Wurth's red, used as the sole "identity" hue everywhere a
+# single series/accent is enough (line-chart "Sent" series, bar chart,
+# buttons, focus states). Never placed adjacent to green in the same chart
+# (see _OUTCOME_COLORS below) - that pairing fails CVD separation, so the
+# outcome donut uses a validated near-red instead for its "Lost" slice.
+_BRAND_RED = "#CC0000"
+_INK = "#1a1a1a"
+_INK_MUTED = "#6b7280"
+_GRID = "#eef0f3"
+
+# Validated categorical palette for the 5-stage lead-outcome donut (see
+# scripts/validate_palette.js "#2a78d6,#1baf7a,#eda100,#008300,#e34948" -
+# ALL CHECKS PASS in light mode). Two slots (Contacted, Quoted) sit under
+# the 3:1 contrast floor, so those slices always ship a direct label with
+# their count (the "relief rule") rather than relying on hue alone.
+_OUTCOME_COLORS = {
+    "new": "#2a78d6",
+    "contacted": "#1baf7a",
+    "quoted": "#eda100",
+    "won": "#008300",
+    "lost": "#e34948",
+}
+# Two-series line chart palette (Received vs Sent) - validated separately
+# (ALL CHECKS PASS): blue reads as "inbound/neutral", brand red as "our
+# reply" - an intentional, not arbitrary, pairing of identity to meaning.
+_LINE_COLOR_RECEIVED = "#2a78d6"
+_LINE_COLOR_SENT = _BRAND_RED
+
+
+def _sparkline_svg(values: list, color: str, width: int = 100, height: int = 32) -> str:
+    """A tiny trend line for a stat tile - no axes, no gridlines, just the
+    shape (per the dataviz skill's stat-tile contract: value + delta +
+    12-point sparkline). Renders nothing (caller shows a flat dash instead)
+    if there isn't enough data to draw a trend."""
+    if len(values) < 2:
+        return ""
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1
+    pad = 3
+    step = (width - 2 * pad) / (len(values) - 1)
+    points = [
+        (pad + i * step, height - pad - ((v - lo) / span) * (height - 2 * pad))
+        for i, v in enumerate(values)
+    ]
+    path = "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in points)
+    last_x, last_y = points[-1]
+    return f"""<svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" class="sparkline">
+        <path d="{path}" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="{last_x:.1f}" cy="{last_y:.1f}" r="3" fill="{color}" stroke="#fff" stroke-width="1.5"/>
+    </svg>"""
+
+
+def _line_chart_svg(daily: list, width: int = 640, height: int = 220) -> str:
+    """Daily Received vs Sent trend - 2-series line chart with a crosshair-
+    free but still legible legend (2 series always gets a legend per the
+    skill's rule), gridlines at clean y-ticks, direct end-labels on both
+    series so the story is readable without hovering."""
+    if not daily:
+        return '<p class="chart-empty">No activity in this range yet.</p>'
+
+    pad_l, pad_r, pad_t, pad_b = 36, 54, 16, 28
+    plot_w, plot_h = width - pad_l - pad_r, height - pad_t - pad_b
+
+    received = [d["received"] for d in daily]
+    sent = [d["sent"] for d in daily]
+    hi = max(max(received, default=0), max(sent, default=0), 1)
+    # Round the top gridline up to a clean step (per skill: "round to clean
+    # numbers"), so ticks read as 0 / 5 / 10 rather than an arbitrary max.
+    step = 1
+    while step * 5 < hi:
+        step *= 2 if step < 10 else 5
+    y_max = step * 5
+
+    n = len(daily)
+    x_of = lambda i: pad_l + (i / max(n - 1, 1)) * plot_w
+    y_of = lambda v: pad_t + plot_h - (v / y_max) * plot_h
+
+    gridlines, y_labels = [], []
+    for i in range(6):
+        y = pad_t + plot_h - (i / 5) * plot_h
+        gridlines.append(f'<line x1="{pad_l}" y1="{y:.1f}" x2="{pad_l + plot_w}" y2="{y:.1f}" stroke="{_GRID}" stroke-width="1"/>')
+        y_labels.append(f'<text x="{pad_l - 8}" y="{y + 4:.1f}" text-anchor="end" class="chart-tick">{int(i * step)}</text>')
+
+    def _path(values, color):
+        pts = [(x_of(i), y_of(v)) for i, v in enumerate(values)]
+        d = "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+        lx, ly = pts[-1]
+        dot = f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="4" fill="{color}" stroke="#fff" stroke-width="2"/>'
+        label = f'<text x="{lx + 8:.1f}" y="{ly + 4:.1f}" class="chart-end-label" fill="{color}">{values[-1]}</text>'
+        return f'<path d="{d}" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>{dot}{label}'
+
+    # X-axis labels: first, middle, last day only (per skill: label
+    # selectively, never every point) - avoids overlapping text on a wide
+    # date range.
+    x_label_idxs = sorted(set([0, n // 2, n - 1]))
+    x_labels = "".join(
+        f'<text x="{x_of(i):.1f}" y="{height - 6}" text-anchor="middle" class="chart-tick">{daily[i]["day"][5:]}</text>'
+        for i in x_label_idxs
+    )
+
+    return f"""
+    <div class="chart-legend">
+        <span class="legend-item"><span class="legend-dot" style="background:{_LINE_COLOR_RECEIVED}"></span>Received</span>
+        <span class="legend-item"><span class="legend-dot" style="background:{_LINE_COLOR_SENT}"></span>Sent</span>
+    </div>
+    <svg viewBox="0 0 {width} {height}" width="100%" height="{height}" class="line-chart" preserveAspectRatio="xMidYMid meet">
+        {"".join(gridlines)}
+        {"".join(y_labels)}
+        {_path(received, _LINE_COLOR_RECEIVED)}
+        {_path(sent, _LINE_COLOR_SENT)}
+        {x_labels}
+    </svg>"""
+
+
+def _bar_chart_svg(rows: list, width: int = 560, height: int = 240) -> str:
+    """Top sales reps by lead count - horizontal bars (reads better than
+    vertical columns for rep-name labels, which are long and many). Single
+    series (lead count) so no legend needed - the panel title already says
+    what's plotted. Capped to the top 8 reps so labels stay legible; ties
+    resolved by original order."""
+    rows = sorted(rows, key=lambda r: r["lead_count"], reverse=True)[:8]
+    if not rows:
+        return '<p class="chart-empty">No leads in this range yet.</p>'
+
+    max_count = max((r["lead_count"] for r in rows), default=1) or 1
+    row_h = 28
+    label_w = 130
+    bar_area_w = width - label_w - 50
+    total_h = len(rows) * row_h + 10
+
+    bars = []
+    for i, r in enumerate(rows):
+        y = i * row_h + 6
+        bar_w = max((r["lead_count"] / max_count) * bar_area_w, 3)
+        name = r["rep_name"] if len(r["rep_name"]) <= 18 else r["rep_name"][:16] + "…"
+        bars.append(f"""
+        <text x="{label_w - 8}" y="{y + 15}" text-anchor="end" class="chart-bar-label">{name}</text>
+        <rect x="{label_w}" y="{y}" width="{bar_w:.1f}" height="18" rx="4" fill="{_BRAND_RED}"/>
+        <text x="{label_w + bar_w + 8:.1f}" y="{y + 14}" class="chart-bar-value">{r['lead_count']}</text>
+        """)
+
+    return f"""<svg viewBox="0 0 {width} {total_h}" width="100%" height="{total_h}" class="bar-chart">
+        {"".join(bars)}
+    </svg>"""
+
+
+def _donut_chart_svg(breakdown: list, size: int = 180) -> str:
+    """Lead outcome breakdown (New/Contacted/Quoted/Won/Lost) as a donut -
+    appropriate here per the skill (part-to-whole, <=6 segments, not a
+    close-value comparison). Always shows a legend with the exact count
+    per stage (the "relief rule" for the two lower-contrast slices, and
+    generally more useful than reading arc angles by eye)."""
+    total = sum(b["count"] for b in breakdown)
+    r, stroke = size / 2 - 14, 20
+    cx = cy = size / 2
+    circumference = 2 * 3.14159265 * r
+
+    if total == 0:
+        arcs = f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="{_GRID}" stroke-width="{stroke}"/>'
+    else:
+        offset = 0
+        segs = []
+        for b in breakdown:
+            if b["count"] == 0:
+                continue
+            frac = b["count"] / total
+            dash = frac * circumference
+            # 2px surface gap between touching segments (per skill spacer
+            # rule) - shorten the dash slightly and let the gap show through.
+            gap = 2
+            segs.append(
+                f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="{_OUTCOME_COLORS[b["outcome"]]}" '
+                f'stroke-width="{stroke}" stroke-dasharray="{max(dash - gap, 0):.2f} {circumference - dash + gap:.2f}" '
+                f'stroke-dashoffset="{-offset:.2f}" transform="rotate(-90 {cx} {cy})"/>'
+            )
+            offset += dash
+        arcs = "".join(segs)
+
+    legend = "".join(
+        f"""<div class="legend-item"><span class="legend-dot" style="background:{_OUTCOME_COLORS[b['outcome']]}"></span>
+            {_OUTCOME_PILL_LABELS[b['outcome']]} <span class="chart-legend-count">{b['count']}</span></div>"""
+        for b in breakdown
+    )
+
+    return f"""
+    <div class="donut-wrap">
+        <svg viewBox="0 0 {size} {size}" width="{size}" height="{size}" class="donut-chart">
+            {arcs}
+            <text x="{cx}" y="{cy - 4}" text-anchor="middle" class="donut-total">{total}</text>
+            <text x="{cx}" y="{cy + 14}" text-anchor="middle" class="donut-total-label">leads</text>
+        </svg>
+        <div class="chart-legend chart-legend-vertical">{legend}</div>
+    </div>"""
+
+
+def _render_dashboard_html(start, end, stats, daily, outcome_breakdown, customers, customers_total, customers_page,
+                            leads_summary, leads_summary_total, leads_summary_page, leads_summary_all,
                             leads_list, leads_list_total, leads_list_page,
                             rep_replies, reps,
                             selected_phone, transcript, transcript_total, transcript_page,
@@ -421,6 +631,14 @@ def _render_dashboard_html(start, end, stats, daily, customers, customers_total,
     ) or "<tr><td colspan='3' class='muted'>No data in this range</td></tr>"
 
     total_leads = leads_list_total
+
+    received_sparkline = _sparkline_svg([d["received"] for d in daily], _LINE_COLOR_RECEIVED)
+    sent_sparkline = _sparkline_svg([d["sent"] for d in daily], _LINE_COLOR_SENT)
+    won_count = next((b["count"] for b in outcome_breakdown if b["outcome"] == "won"), 0)
+
+    line_chart_html = _line_chart_svg(daily)
+    donut_chart_html = _donut_chart_svg(outcome_breakdown)
+    bar_chart_html = _bar_chart_svg(leads_summary_all)
 
     leads_summary_rows = "".join(
         f"""<tr>
@@ -594,55 +812,106 @@ style="margin-top:4px" onsubmit="return confirm('Manually escalate this message 
 <meta name="robots" content="noindex, nofollow">
 <style>
 {_BASE_STYLE}
-  .container {{ padding: 16px; max-width: 1200px; margin: 0 auto; }}
-  .filters {{ background: white; border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }}
-  .filters label {{ font-size: 0.85em; color: #555; }}
-  .filters input {{ padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; width: 100%; max-width: 160px; }}
-  .filters button, .filters a.button {{ background: #c8102e; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; text-decoration: none; font-size: 0.9em; display: inline-block; }}
-  .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }}
-  .stat-card {{ background: white; border-radius: 8px; padding: 14px; }}
-  .stat-card .value {{ font-size: 1.6em; font-weight: 700; color: #c8102e; }}
-  .stat-card .label {{ font-size: 0.8em; color: #666; margin-top: 4px; }}
+  .container {{ padding: 24px; max-width: 1320px; margin: 0 auto; }}
+  .filters {{ background: white; border: 1px solid #eceef1; border-radius: 12px; padding: 14px 18px; margin-bottom: 20px;
+              display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }}
+  .filters label {{ font-size: 0.82em; color: #6b7280; font-weight: 600; display: flex; align-items: center; gap: 6px; }}
+  .filters input {{ padding: 7px 10px; border: 1px solid #e2e4e9; border-radius: 8px; width: 100%; max-width: 160px; font-size: 0.9em; }}
+  .filters input:focus {{ outline: none; border-color: #CC0000; box-shadow: 0 0 0 3px rgba(204,0,0,0.1); }}
+  .filters button, .filters a.button {{ background: #CC0000; color: white; border: none; padding: 9px 18px; border-radius: 8px;
+              cursor: pointer; text-decoration: none; font-size: 0.88em; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }}
+  .filters button:hover, .filters a.button:hover {{ background: #a80000; }}
+  .filters a.button.secondary {{ background: white; color: #1a1a1a; border: 1px solid #e2e4e9; }}
+  .filters a.button.secondary:hover {{ background: #f7f7f9; }}
+
+  .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px; }}
+  .stat-card {{ background: white; border: 1px solid #eceef1; border-radius: 14px; padding: 18px 20px; display: flex;
+                flex-direction: column; gap: 2px; position: relative; overflow: hidden; }}
+  .stat-card .stat-top {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }}
+  .stat-card .icon {{ width: 34px; height: 34px; border-radius: 9px; display: flex; align-items: center; justify-content: center;
+                       font-size: 1.05em; flex-shrink: 0; }}
+  .stat-card .icon.i-messages {{ background: #eaf1fd; }}
+  .stat-card .icon.i-replies {{ background: #fdeaea; }}
+  .stat-card .icon.i-customers {{ background: #eafaf1; }}
+  .stat-card .icon.i-leads {{ background: #fff6e6; }}
+  .stat-card .icon.i-won {{ background: #e9f7ec; }}
+  .stat-card .value {{ font-size: 1.7em; font-weight: 700; color: #1a1a1a; margin-top: 10px; letter-spacing: -0.02em; }}
+  .stat-card .label {{ font-size: 0.82em; color: #6b7280; font-weight: 600; }}
+  .stat-card .sparkline {{ position: absolute; right: 16px; bottom: 14px; opacity: 0.9; }}
+
+  .charts-grid {{ display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; margin-bottom: 20px; align-items: stretch; }}
+  @media (max-width: 980px) {{ .charts-grid {{ grid-template-columns: 1fr; }} }}
+  .chart-row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }}
+  @media (max-width: 980px) {{ .chart-row {{ grid-template-columns: 1fr; }} }}
+
   .grid {{ display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; align-items: start; }}
   @media (max-width: 900px) {{ .grid {{ grid-template-columns: 1fr; }} }}
-  .panel {{ background: white; border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; overflow-x: auto; }}
-  .panel h2 {{ font-size: 1em; margin: 0 0 10px 0; }}
+
+  .panel {{ background: white; border: 1px solid #eceef1; border-radius: 14px; padding: 18px 20px; margin-bottom: 20px; overflow-x: auto; }}
+  .panel h2 {{ font-size: 0.98em; margin: 0 0 4px 0; font-weight: 700; display: flex; align-items: center; gap: 8px; }}
+  .panel h2 .badge {{ background: #f7f7f9; color: #6b7280; font-size: 0.72em; font-weight: 700; padding: 2px 8px; border-radius: 20px; }}
+  .panel .subtitle {{ font-size: 0.82em; color: #6b7280; margin: 0 0 14px 0; }}
+
   table {{ width: 100%; border-collapse: collapse; font-size: 0.85em; min-width: 380px; }}
-  th, td {{ text-align: left; padding: 7px 8px; border-bottom: 1px solid #eee; white-space: nowrap; }}
-  th {{ color: #666; font-weight: 600; font-size: 0.78em; text-transform: uppercase; }}
-  tr.active {{ background: #fdeef0; }}
-  tr:hover {{ background: #fafafa; }}
-  .muted {{ color: #999; }}
-  .pill {{ display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.78em; font-weight: 600; white-space: nowrap; }}
+  th, td {{ text-align: left; padding: 9px 10px; border-bottom: 1px solid #f2f3f5; white-space: nowrap; }}
+  th {{ color: #9ca3af; font-weight: 700; font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.03em; }}
+  tr.active {{ background: #fdf1f1; }}
+  tr:hover {{ background: #fafafb; }}
+  .muted {{ color: #9ca3af; }}
+
+  .pill {{ display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 0.76em; font-weight: 700; white-space: nowrap; }}
   .pill.delivered {{ background: #e6f4ea; color: #1a7f37; }}
-  .pill.failed {{ background: #fdeaec; color: #c8102e; }}
+  .pill.failed {{ background: #fdeaec; color: #CC0000; }}
   .pill.pending {{ background: #f0f0f0; color: #888; }}
   .pill.status-open {{ background: #e8f0fe; color: #1a56c8; }}
   .pill.status-closed {{ background: #f0f0f0; color: #888; }}
   .pill.guess {{ background: #fff4e5; color: #a85d00; }}
-  .pill.priority-high {{ background: #fdeaec; color: #c8102e; }}
+  .pill.priority-high {{ background: #fdeaec; color: #CC0000; }}
   .pill.priority-medium {{ background: #fff4e5; color: #a85d00; }}
   .pill.priority-low {{ background: #f0f0f0; color: #888; }}
   .pill.fp {{ background: #f0f0f0; color: #888; }}
-  .pill.outcome-new {{ background: #f0f0f0; color: #888; }}
-  .pill.outcome-contacted {{ background: #e8f0fe; color: #1a56c8; }}
-  .pill.outcome-quoted {{ background: #fff4e5; color: #a85d00; }}
-  .pill.outcome-won {{ background: #e6f4ea; color: #1a7f37; }}
-  .pill.outcome-lost {{ background: #fdeaec; color: #c8102e; }}
-  .btn-fp {{ background: none; border: 1px solid #ccc; color: #666; font-size: 0.78em; padding: 3px 8px; border-radius: 4px; cursor: pointer; white-space: nowrap; }}
-  .btn-fp:hover {{ background: #f5f5f5; border-color: #999; }}
+  .pill.outcome-new {{ background: #eaf1fd; color: #2a78d6; }}
+  .pill.outcome-contacted {{ background: #e4f7ee; color: #1baf7a; }}
+  .pill.outcome-quoted {{ background: #fff6e6; color: #a86e00; }}
+  .pill.outcome-won {{ background: #e6f4ea; color: #008300; }}
+  .pill.outcome-lost {{ background: #fdeaea; color: #e34948; }}
+
+  .btn-fp {{ background: white; border: 1px solid #e2e4e9; color: #4b5563; font-size: 0.78em; font-weight: 600; padding: 4px 10px;
+             border-radius: 7px; cursor: pointer; white-space: nowrap; }}
+  .btn-fp:hover {{ background: #f7f7f9; border-color: #CC0000; color: #CC0000; }}
+
   .chat-window {{ max-height: 500px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }}
-  .bubble {{ max-width: 85%; padding: 8px 12px; border-radius: 10px; font-size: 0.9em; }}
-  .bubble.in {{ align-self: flex-start; background: #eee; }}
-  .bubble.out {{ align-self: flex-end; background: #d6e9ff; }}
-  .bubble.escalated {{ border: 1px solid #c8102e; }}
+  .bubble {{ max-width: 85%; padding: 9px 13px; border-radius: 14px; font-size: 0.9em; }}
+  .bubble.in {{ align-self: flex-start; background: #f2f3f5; border-bottom-left-radius: 4px; }}
+  .bubble.out {{ align-self: flex-end; background: #fdecec; border-bottom-right-radius: 4px; }}
+  .bubble.escalated {{ border: 1px solid #CC0000; }}
   .bubble-text {{ white-space: pre-wrap; word-break: break-word; }}
-  .bubble-time {{ font-size: 0.7em; color: #888; margin-top: 4px; }}
-  .pagination {{ display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px; border-top: 1px solid #eee; }}
-  .page-num {{ display: inline-block; min-width: 26px; text-align: center; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; text-decoration: none; color: #333; background: #f0f0f0; }}
-  .page-num:hover {{ background: #e2e2e2; }}
-  .page-num.active {{ background: #c8102e; color: white; font-weight: 600; }}
+  .bubble-time {{ font-size: 0.7em; color: #9ca3af; margin-top: 4px; }}
+
+  .pagination {{ display: flex; gap: 6px; flex-wrap: wrap; margin-top: 14px; padding-top: 14px; border-top: 1px solid #f2f3f5; }}
+  .page-num {{ display: inline-block; min-width: 28px; text-align: center; padding: 5px 9px; border-radius: 7px; font-size: 0.85em;
+               text-decoration: none; color: #4b5563; background: #f7f7f9; font-weight: 600; }}
+  .page-num:hover {{ background: #eceef1; }}
+  .page-num.active {{ background: #CC0000; color: white; }}
+
+  /* ===== Charts ===== */
+  .chart-empty {{ color: #9ca3af; font-size: 0.85em; padding: 40px 0; text-align: center; }}
+  .chart-legend {{ display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; font-size: 0.8em; color: #4b5563; font-weight: 600; }}
+  .chart-legend-vertical {{ flex-direction: column; gap: 8px; margin-bottom: 0; align-items: flex-start; }}
+  .legend-item {{ display: inline-flex; align-items: center; gap: 6px; }}
+  .legend-dot {{ width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex-shrink: 0; }}
+  .chart-legend-count {{ color: #9ca3af; font-weight: 700; }}
+  .chart-tick {{ font-size: 9px; fill: #9ca3af; font-weight: 600; }}
+  .chart-end-label {{ font-size: 11px; font-weight: 700; }}
+  .chart-bar-label {{ font-size: 11px; fill: #4b5563; font-weight: 600; }}
+  .chart-bar-value {{ font-size: 11px; fill: #1a1a1a; font-weight: 700; dominant-baseline: middle; }}
+  .donut-wrap {{ display: flex; align-items: center; gap: 20px; flex-wrap: wrap; justify-content: center; }}
+  .donut-total {{ font-size: 26px; font-weight: 700; fill: #1a1a1a; }}
+  .donut-total-label {{ font-size: 10px; fill: #9ca3af; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }}
+  .line-chart, .bar-chart {{ display: block; }}
+
   @media (max-width: 600px) {{
+    .container {{ padding: 14px; }}
     header h1 {{ font-size: 1em; }}
     .filters {{ flex-direction: column; align-items: stretch; }}
     .filters input {{ max-width: none; }}
@@ -653,23 +922,65 @@ style="margin-top:4px" onsubmit="return confirm('Manually escalate this message 
 <body>
 <header>
   <img class="logo" src="{LOGO_URL}" alt="Würth">
-  <h1>WhatsApp Agent &middot; Dashboard</h1>
-  <a class="logout" href="/dashboard/logout">Log out</a>
+  <h1>WhatsApp Agent &middot; Sales Dashboard</h1>
+  <a class="logout" href="/dashboard/logout">Log out &rarr;</a>
 </header>
 <div class="container">
 
   <form class="filters" method="get">
-    <label>From <input type="date" name="start" value="{start}"></label>
+    <label>📅 From <input type="date" name="start" value="{start}"></label>
     <label>To <input type="date" name="end" value="{end}"></label>
     <button type="submit">Apply</button>
-    <a class="button" href="/dashboard/export?start={start}&end={end}">Export to Excel</a>
+    <a class="button secondary" href="/dashboard/export?start={start}&end={end}">⬇ Export to Excel</a>
   </form>
 
   <div class="stats">
-    <div class="stat-card"><div class="value">{stats['messages_received']}</div><div class="label">Messages received</div></div>
-    <div class="stat-card"><div class="value">{stats['replies_sent']}</div><div class="label">Replies sent</div></div>
-    <div class="stat-card"><div class="value">{stats['unique_customers']}</div><div class="label">Unique customers</div></div>
-    <div class="stat-card"><div class="value">{total_leads}</div><div class="label">Sales leads generated</div></div>
+    <div class="stat-card">
+      <div class="stat-top"><span class="icon i-messages">💬</span></div>
+      <div class="value">{stats['messages_received']}</div>
+      <div class="label">Messages received</div>
+      {received_sparkline}
+    </div>
+    <div class="stat-card">
+      <div class="stat-top"><span class="icon i-replies">↩️</span></div>
+      <div class="value">{stats['replies_sent']}</div>
+      <div class="label">Replies sent</div>
+      {sent_sparkline}
+    </div>
+    <div class="stat-card">
+      <div class="stat-top"><span class="icon i-customers">👥</span></div>
+      <div class="value">{stats['unique_customers']}</div>
+      <div class="label">Unique customers</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-top"><span class="icon i-leads">🎯</span></div>
+      <div class="value">{total_leads}</div>
+      <div class="label">Sales leads generated</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-top"><span class="icon i-won">🏆</span></div>
+      <div class="value">{won_count}</div>
+      <div class="label">Deals won</div>
+    </div>
+  </div>
+
+  <div class="charts-grid">
+    <div class="panel">
+      <h2>Message activity</h2>
+      <p class="subtitle">Customer messages received vs. AI replies sent, per day</p>
+      {line_chart_html}
+    </div>
+    <div class="panel">
+      <h2>Lead pipeline</h2>
+      <p class="subtitle">Every open &amp; closed lead by outcome stage</p>
+      {donut_chart_html}
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Top sales reps by leads <span class="badge">{leads_summary_total} reps</span></h2>
+    <p class="subtitle">How AI-detected leads are distributed across the team in this range</p>
+    {bar_chart_html}
   </div>
 
   <div class="panel">
@@ -682,7 +993,7 @@ style="margin-top:4px" onsubmit="return confirm('Manually escalate this message 
 
   <div class="panel">
     <h2>Sales leads by rep &middot; how AI is helping the team ({leads_summary_total} reps, {total_leads} leads total)</h2>
-    <p class="muted" style="margin-top:-4px">A "lead" is a customer enquiry the AI recognized as purchase intent, a quote/pricing \
+    <p class="subtitle">A "lead" is a customer enquiry the AI recognized as purchase intent, a quote/pricing \
 request, or an urgent issue, and flagged for the assigned sales rep to follow up on.</p>
     <table>
       <tr><th>Sales Rep</th><th>Leads</th><th>Customers</th><th>Last lead</th><th>Failed notifications</th></tr>
@@ -692,7 +1003,7 @@ request, or an urgent issue, and flagged for the assigned sales rep to follow up
   </div>
 
   <div class="panel">
-    <h2>Recent leads ({leads_list_total})</h2>
+    <h2>Recent leads <span class="badge">{leads_list_total}</span></h2>
     <table>
       <tr><th>When</th><th>Customer</th><th>Rep</th><th>Enquiry</th><th>Priority</th><th>Status</th><th>Delivery</th><th>Rep Response</th><th>Outcome</th><th>Action</th></tr>
       {leads_list_rows}
@@ -701,8 +1012,8 @@ request, or an urgent issue, and flagged for the assigned sales rep to follow up
   </div>
 
   <div class="panel">
-    <h2>Rep replies ({len(rep_replies)})</h2>
-    <p class="muted" style="margin-top:-4px">Every reply a sales rep sent back after being notified of a lead, in order - a dedicated \
+    <h2>Rep replies <span class="badge">{len(rep_replies)}</span></h2>
+    <p class="subtitle">Every reply a sales rep sent back after being notified of a lead, in order - a dedicated \
 view of rep engagement separate from the leads table above (which only shows the latest reply per lead).</p>
     <table>
       <tr><th>When</th><th>Rep</th><th>Customer</th><th>Reply</th><th>Match confidence</th></tr>
@@ -712,7 +1023,7 @@ view of rep engagement separate from the leads table above (which only shows the
 
   <div class="grid">
     <div class="panel">
-      <h2>Customers ({customers_total})</h2>
+      <h2>Customers <span class="badge">{customers_total}</span></h2>
       <table>
         <tr><th>Phone</th><th>Company</th><th>Rep</th><th>Msgs</th><th>Last active</th></tr>
         {customer_rows}
@@ -724,7 +1035,7 @@ view of rep engagement separate from the leads table above (which only shows the
 
   <div class="grid">
     <div class="panel">
-      <h2>Sales reps ({len(reps)})</h2>
+      <h2>Sales reps <span class="badge">{len(reps)}</span></h2>
       <table>
         <tr><th>Phone</th><th>Rep</th><th>Msgs</th><th>Last active</th></tr>
         {rep_rows}

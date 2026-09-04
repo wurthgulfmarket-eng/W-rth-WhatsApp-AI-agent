@@ -1000,6 +1000,22 @@ def get_lead_outcome_history(lead_id: int) -> list:
         _put_conn(conn)
 
 
+def get_outcome_breakdown(start: str = None, end: str = None) -> list:
+    """Count of leads per outcome stage in the range, for the dashboard's
+    outcome donut chart. Always returns all 5 stages (zero-filled), in a
+    fixed New/Contacted/Quoted/Won/Lost order, so the chart's slice order
+    and legend never shuffle based on which stages happen to have data."""
+    conn = _get_conn()
+    try:
+        where, params = _date_where(start, end, column="last_activity_at")
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT outcome, COUNT(*) FROM leads WHERE 1=1 {where} GROUP BY outcome", params)
+            counts = dict(cur.fetchall())
+        return [{"outcome": o, "count": counts.get(o, 0)} for o in ("new", "contacted", "quoted", "won", "lost")]
+    finally:
+        _put_conn(conn)
+
+
 def get_recent_positive_lead_examples(limit: int) -> list[str]:
     """Enquiry text of the most recent leads NOT marked as a false
     positive - the "genuine lead" half of the Head-of-Replies few-shot
