@@ -144,6 +144,18 @@ class Config:
     WHATSAPP_REP_REMINDER_TEMPLATE_NAME = os.getenv("WHATSAPP_REP_REMINDER_TEMPLATE_NAME", "")
     WHATSAPP_REP_REMINDER_TEMPLATE_LANGUAGE = os.getenv("WHATSAPP_REP_REMINDER_TEMPLATE_LANGUAGE", "en")
 
+    # Per-category USD rate for the dashboard's Meta API cost estimate.
+    # Meta moved to per-message pricing (category-based) in mid-2025; the
+    # actual rate depends on your specific WhatsApp BSP/reseller contract,
+    # which this app has no way to know - these are rough UAE-market
+    # defaults, override with your real invoiced rates once known.
+    # "service" (free-form replies within the 24h customer window) is
+    # always $0 - Meta never bills those regardless of this config.
+    WHATSAPP_RATE_UTILITY_USD = float(os.getenv("WHATSAPP_RATE_UTILITY_USD", "0.04"))
+    WHATSAPP_RATE_MARKETING_USD = float(os.getenv("WHATSAPP_RATE_MARKETING_USD", "0.06"))
+    WHATSAPP_RATE_MARKETING_LITE_USD = float(os.getenv("WHATSAPP_RATE_MARKETING_LITE_USD", "0.03"))
+    WHATSAPP_RATE_AUTHENTICATION_USD = float(os.getenv("WHATSAPP_RATE_AUTHENTICATION_USD", "0.05"))
+
     # Database - Postgres is required for persistence, since Render's free
     # tier web service filesystem is ephemeral and wipes SQLite on every
     # deploy/restart. Use Render's own managed Postgres (New > PostgreSQL in

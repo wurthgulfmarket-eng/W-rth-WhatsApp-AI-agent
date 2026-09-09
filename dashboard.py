@@ -193,11 +193,14 @@ def dashboard_page(request: Request, start: str = "", end: str = "", phone: str 
     else:
         transcript, transcript_total = None, 0
     rep_transcript = store.get_rep_transcript(rep_phone, start, end) if rep_phone else None
+    meta_cost = store.get_meta_cost_summary(start, end)
+    template_usage = store.get_template_usage_summary(start, end)
 
     return HTMLResponse(_render_dashboard_html(
         start, end, stats, daily, outcome_breakdown, customers, customers_total, cpage,
         leads_summary, leads_summary_total, spage, leads_summary_all, leads_list, leads_list_total, lpage,
         rep_replies, reps, phone, transcript, transcript_total, page, rep_phone, rep_transcript,
+        meta_cost, template_usage,
     ))
 
 
@@ -273,6 +276,22 @@ def export_excel(request: Request, start: str = "", end: str = ""):
         ])
     for col_letter, width in zip("ABCDEFG", [26, 20, 16, 24, 16, 60, 16]):
         ws6.column_dimensions[col_letter].width = width
+
+    ws7 = wb.create_sheet("Meta API Cost")
+    ws7.append(["Category", "Messages", "Billable Messages", "Estimated Cost (USD)"])
+    meta_cost = store.get_meta_cost_summary(start, end)
+    for row in meta_cost["by_category"]:
+        ws7.append([row["category"], row["count"], row["billable_count"], round(row["cost_usd"], 2)])
+    ws7.append(["TOTAL", "", meta_cost["total_billable_messages"], round(meta_cost["total_cost_usd"], 2)])
+    for col_letter, width in zip("ABCD", [18, 14, 18, 20]):
+        ws7.column_dimensions[col_letter].width = width
+
+    ws8 = wb.create_sheet("Template Usage")
+    ws8.append(["Template", "Sent", "Delivered", "Failed"])
+    for row in store.get_template_usage_summary(start, end):
+        ws8.append([row["template_name"], row["send_count"], row["success_count"], row["send_count"] - row["success_count"]])
+    for col_letter, width in zip("ABCD", [30, 10, 12, 10]):
+        ws8.column_dimensions[col_letter].width = width
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -625,7 +644,8 @@ def _render_dashboard_html(start, end, stats, daily, outcome_breakdown, customer
                             leads_list, leads_list_total, leads_list_page,
                             rep_replies, reps,
                             selected_phone, transcript, transcript_total, transcript_page,
-                            selected_rep_phone, rep_transcript):
+                            selected_rep_phone, rep_transcript,
+                            meta_cost, template_usage):
     daily_rows = "".join(
         f"<tr><td>{d['day']}</td><td>{d['received']}</td><td>{d['sent']}</td></tr>" for d in daily
     ) or "<tr><td colspan='3' class='muted'>No data in this range</td></tr>"
@@ -703,6 +723,28 @@ onsubmit="return confirm('Mark this as NOT a real lead? This helps train the Hea
             <td>{_esc(_CONFIDENCE_LABELS.get(r['resolution_method'], r['resolution_method']))}</td>
         </tr>""" for r in rep_replies
     ) or "<tr><td colspan='5' class='muted'>No rep replies in this range</td></tr>"
+
+    _CATEGORY_LABELS = {
+        "utility": "Utility", "marketing": "Marketing", "marketing_lite": "Marketing (lite)",
+        "authentication": "Authentication", "service": "Service (free)", "unknown": "Unknown",
+    }
+    meta_cost_rows = "".join(
+        f"""<tr>
+            <td>{_esc(_CATEGORY_LABELS.get(c['category'], c['category']))}</td>
+            <td>{c['count']}</td>
+            <td>{c['billable_count']}</td>
+            <td>${c['cost_usd']:,.2f}</td>
+        </tr>""" for c in meta_cost["by_category"]
+    ) or "<tr><td colspan='4' class='muted'>No pricing data captured in this range yet</td></tr>"
+
+    template_usage_rows = "".join(
+        f"""<tr>
+            <td>{_esc(t['template_name'])}</td>
+            <td>{t['send_count']}</td>
+            <td>{t['success_count']}</td>
+            <td>{t['send_count'] - t['success_count']}</td>
+        </tr>""" for t in template_usage
+    ) or "<tr><td colspan='4' class='muted'>No template sends in this range</td></tr>"
 
     customer_rows = "".join(
         f"""<tr class="{'active' if c['phone'] == selected_phone else ''}">
@@ -1019,6 +1061,28 @@ view of rep engagement separate from the leads table above (which only shows the
       <tr><th>When</th><th>Rep</th><th>Customer</th><th>Reply</th><th>Match confidence</th></tr>
       {rep_replies_rows}
     </table>
+  </div>
+
+  <div class="charts-grid">
+    <div class="panel">
+      <h2>Meta API cost <span class="badge">${meta_cost['total_cost_usd']:,.2f}</span></h2>
+      <p class="subtitle">Estimated from real pricing data Meta attaches to each message's delivery status \
+&middot; rates are configurable (WHATSAPP_RATE_* env vars) since your actual contracted rate depends on your \
+WhatsApp BSP - these are approximate until set to your real invoiced rates.</p>
+      <table>
+        <tr><th>Category</th><th>Messages</th><th>Billable</th><th>Est. cost</th></tr>
+        {meta_cost_rows}
+      </table>
+    </div>
+    <div class="panel">
+      <h2>Template usage <span class="badge">{sum(t['send_count'] for t in template_usage)} sent</span></h2>
+      <p class="subtitle">Every Meta-approved template send so far (rep/ops escalation alerts and day-1 rep \
+reminders), with delivery success.</p>
+      <table>
+        <tr><th>Template</th><th>Sent</th><th>Delivered</th><th>Failed</th></tr>
+        {template_usage_rows}
+      </table>
+    </div>
   </div>
 
   <div class="grid">

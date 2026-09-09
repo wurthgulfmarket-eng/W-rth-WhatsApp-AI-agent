@@ -78,5 +78,13 @@ services:
         sync: false
       - key: WHATSAPP_REP_REMINDER_TEMPLATE_LANGUAGE
         value: en
+      - key: WHATSAPP_RATE_UTILITY_USD
+        value: "0.04"
+      - key: WHATSAPP_RATE_MARKETING_USD
+        value: "0.06"
+      - key: WHATSAPP_RATE_MARKETING_LITE_USD
+        value: "0.03"
+      - key: WHATSAPP_RATE_AUTHENTICATION_USD
+        value: "0.05"
       - key: PYTHON_VERSION
         value: 3.11.9

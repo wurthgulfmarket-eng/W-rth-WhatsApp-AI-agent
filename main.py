@@ -123,19 +123,35 @@ def _send_day1_followups():
             {"type": "text", "parameter_name": "customer_phone", "text": lead["phone"]},
         ]}]
 
+        normalized_rep_phone = to_whatsapp_number(lead["rep_phone"])
+        whatsapp_message_id = None
+        error_detail = None
+        success = False
         try:
-            send_template_message(
-                to_whatsapp_number(lead["rep_phone"]),
+            resp = send_template_message(
+                normalized_rep_phone,
                 config.WHATSAPP_REP_REMINDER_TEMPLATE_NAME,
                 config.WHATSAPP_REP_REMINDER_TEMPLATE_LANGUAGE,
                 components,
             )
+            whatsapp_message_id = resp.get("messages", [{}])[0].get("id")
+            success = True
             store.mark_lead_followup_sent(lead["id"])
             logger.info("Sent day-1 rep reminder to lead id=%s rep_phone=%s", lead["id"], lead["rep_phone"])
         except WhatsAppError as e:
             # Leave followup_sent_at NULL so this lead is retried on the
             # next scheduled run instead of being silently dropped.
+            error_detail = str(e)
             logger.error("Day-1 rep reminder failed for lead id=%s rep_phone=%s: %s", lead["id"], lead["rep_phone"], e)
+
+        # Recorded the same way the other 2 templates already are (rep/ops
+        # escalation alerts) - previously this send was entirely untracked,
+        # so it never showed up in the dashboard's template usage/cost
+        # breakdown even though it's a real, billable template send.
+        store.record_escalation_attempt(
+            None, lead["phone"], "rep_reminder", normalized_rep_phone, lead["rep_name"],
+            "template", config.WHATSAPP_REP_REMINDER_TEMPLATE_NAME, success, whatsapp_message_id, error_detail,
+        )
 
 
 # Sends the day-1 rep reminder for any lead the assigned rep hasn't replied
@@ -194,7 +210,25 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
         value = change["value"]
 
         if "messages" not in value:
-            # Could be a status update (sent/delivered/read) - nothing to do
+            # A status update (sent/delivered/read) - usually nothing to do,
+            # but Meta attaches real billing data (pricing.category/
+            # billable) to these events, not to the inbound message events.
+            # Capture it so the dashboard can show actual Meta API cost
+            # instead of guessing from what we think we sent.
+            for status_event in value.get("statuses", []):
+                pricing = status_event.get("pricing")
+                if pricing:
+                    try:
+                        store.record_message_pricing(
+                            status_event.get("id", ""),
+                            status_event.get("recipient_id"),
+                            pricing.get("category"),
+                            bool(pricing.get("billable")),
+                            pricing.get("pricing_model"),
+                            status_event.get("status"),
+                        )
+                    except Exception:
+                        logger.exception("Failed to record message pricing for status event %s", status_event.get("id"))
             return {"status": "ignored"}
 
         message = value["messages"][0]

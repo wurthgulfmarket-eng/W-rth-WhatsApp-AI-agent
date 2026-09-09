@@ -172,6 +172,29 @@ def _init_schema():
                 created_at TIMESTAMPTZ NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_lead_outcome_history_lead ON lead_outcome_history (lead_id);
+
+            -- One row per WhatsApp status webhook event that carries real
+            -- Meta billing data (see main.py's receive_webhook) - lets the
+            -- dashboard show actual per-category message counts and an
+            -- estimated cost, rather than guessing from what we sent.
+            -- whatsapp_message_id is NOT unique: Meta sends a separate
+            -- status event per message per status transition (sent ->
+            -- delivered -> read), each carrying the SAME pricing info: only
+            -- the first ever event for a given message is billable, so
+            -- get_meta_cost_summary() dedupes by whatsapp_message_id itself
+            -- rather than relying on a uniqueness constraint here.
+            CREATE TABLE IF NOT EXISTS message_pricing (
+                id SERIAL PRIMARY KEY,
+                whatsapp_message_id TEXT NOT NULL,
+                recipient_phone TEXT,
+                category TEXT,
+                billable INTEGER NOT NULL DEFAULT 0,
+                pricing_model TEXT,
+                status TEXT,
+                created_at TIMESTAMPTZ NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_message_pricing_wamid ON message_pricing (whatsapp_message_id);
+            CREATE INDEX IF NOT EXISTS idx_message_pricing_created_at ON message_pricing (created_at);
             """)
 
             # One-time backfill: group historical escalated messages into
@@ -356,6 +379,109 @@ def record_escalation_attempt(
                 datetime.now(timezone.utc),
             ))
         conn.commit()
+    finally:
+        _put_conn(conn)
+
+
+def record_message_pricing(whatsapp_message_id: str, recipient_phone: str | None, category: str | None,
+                            billable: bool, pricing_model: str | None, status: str | None):
+    """One row per pricing-bearing status webhook event (see main.py's
+    receive_webhook) - Meta sends a separate status event per message per
+    status transition (sent/delivered/read), all carrying identical
+    pricing info for that message. Deliberately NOT deduped/upserted here
+    (no unique constraint on whatsapp_message_id) - get_meta_cost_summary()
+    dedupes by whatsapp_message_id at query time instead, so this insert
+    stays a simple, always-safe append with no read-before-write race."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO message_pricing (whatsapp_message_id, recipient_phone, category, billable, "
+                "pricing_model, status, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (whatsapp_message_id, recipient_phone, category, int(billable), pricing_model, status,
+                 datetime.now(timezone.utc)),
+            )
+        conn.commit()
+    finally:
+        _put_conn(conn)
+
+
+def get_meta_cost_summary(start: str = None, end: str = None) -> dict:
+    """Real Meta API cost for the range, from actual pricing.category data
+    captured off WhatsApp status webhooks (see record_message_pricing) -
+    not an estimate from what we think we sent. Dedupes to one row per
+    whatsapp_message_id (Meta repeats the same pricing info across the
+    sent/delivered/read status events for one message) by keeping only
+    the earliest-seen row per message id. Rates are applied in Python from
+    config (not baked into SQL) since they're just a display-time multiplier,
+    not stored data - changing config.WHATSAPP_RATE_* immediately reflects
+    in past totals too, which is the right behavior for a rate that was
+    always just an estimate.
+    Returns {"by_category": [{"category", "count", "billable_count", "cost_usd"}, ...],
+             "total_cost_usd": float, "total_billable_messages": int}."""
+    rates = {
+        "utility": config.WHATSAPP_RATE_UTILITY_USD,
+        "marketing": config.WHATSAPP_RATE_MARKETING_USD,
+        "marketing_lite": config.WHATSAPP_RATE_MARKETING_LITE_USD,
+        "authentication": config.WHATSAPP_RATE_AUTHENTICATION_USD,
+        "service": 0.0,  # free-form replies within the 24h customer window - Meta never bills these
+    }
+    conn = _get_conn()
+    try:
+        where, params = _date_where(start, end)
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT category, COUNT(*), SUM(billable)
+                FROM (
+                    SELECT DISTINCT ON (whatsapp_message_id) whatsapp_message_id, category, billable
+                    FROM message_pricing
+                    WHERE 1=1 {where}
+                    ORDER BY whatsapp_message_id, created_at ASC
+                ) deduped
+                GROUP BY category
+                ORDER BY category
+            """, params)
+            rows = cur.fetchall()
+
+        by_category = []
+        total_cost = 0.0
+        total_billable = 0
+        for category, count, billable_count in rows:
+            billable_count = billable_count or 0
+            rate = rates.get(category, 0.0)
+            cost = billable_count * rate
+            total_cost += cost
+            total_billable += billable_count
+            by_category.append({
+                "category": category or "unknown", "count": count,
+                "billable_count": billable_count, "cost_usd": cost,
+            })
+        return {"by_category": by_category, "total_cost_usd": total_cost, "total_billable_messages": total_billable}
+    finally:
+        _put_conn(conn)
+
+
+def get_template_usage_summary(start: str = None, end: str = None) -> list:
+    """How many times each Meta-approved template was actually sent, split
+    by delivery success - the "templates so far" half of the dashboard's
+    cost panel. Reads escalation_attempts (all 3 template sends - rep
+    escalation, ops escalation, and the day-1 rep reminder - are recorded
+    there, see main.py)."""
+    conn = _get_conn()
+    try:
+        where, params = _date_where(start, end)
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT template_name, COUNT(*), SUM(success)
+                FROM escalation_attempts
+                WHERE message_type = 'template' AND template_name IS NOT NULL {where}
+                GROUP BY template_name
+                ORDER BY COUNT(*) DESC
+            """, params)
+            return [
+                {"template_name": name, "send_count": count, "success_count": success or 0}
+                for name, count, success in cur.fetchall()
+            ]
     finally:
         _put_conn(conn)
 
