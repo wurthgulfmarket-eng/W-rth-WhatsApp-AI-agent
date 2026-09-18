@@ -326,6 +326,36 @@ def verify_webhook(request: Request):
     return Response(content="Verification failed", status_code=403)
 
 
+def _extract_resolution_button_id(message: dict) -> str | None:
+    """Normalizes a Yes/No quick-reply button click to "resolution_yes" /
+    "resolution_no", regardless of which shape Meta reports it in.
+
+    Real-world confirmed shape (every click ever received in production):
+    type == "button", with button.payload / button.text both equal to the
+    button's visible label ("Yes"/"No") - this is what Meta actually sends
+    for a template message's Quick Reply buttons. There is no per-button
+    developer payload field in WhatsApp Manager's template editor - the
+    payload IS the button's display text, so matching must be done on that
+    text (case-insensitive), not a custom ID.
+
+    type == "interactive" with interactive.button_reply.id is also checked
+    for safety, in case a future non-template interactive message ever
+    lands here - that shape genuinely does carry a developer-set ID rather
+    than display text, but is not what templates produce."""
+    if message.get("type") == "button":
+        label = message.get("button", {}).get("payload") or message.get("button", {}).get("text") or ""
+    else:
+        label = message.get("interactive", {}).get("button_reply", {}).get("title") or \
+                message.get("interactive", {}).get("button_reply", {}).get("id") or ""
+
+    label = label.strip().lower()
+    if label == "yes" or label == "resolution_yes":
+        return "resolution_yes"
+    if label == "no" or label == "resolution_no":
+        return "resolution_no"
+    return None
+
+
 # ---- Inbound messages (POST) ----
 # Responds to Meta immediately and does the actual work (OpenRouter call, KB
 # search, Sheets lookup, sending the reply) in a background task. Meta expects
@@ -407,35 +437,38 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
             text = message.get("text", {}).get("body", "").strip()
             if text:
                 background_tasks.add_task(_process_rep_reply, from_number, text, message_id, context_id)
-        elif msg_type == "interactive":
+        elif msg_type in ("button", "interactive"):
             # A rep tapping a Quick Reply button on the rep-side "did you
             # resolve this?" check (see _send_rep_resolution_checks) -
-            # mirrors the customer-side interactive handling below, but
-            # routed to the rep-specific handler since it must never be
-            # confused with (or looked up the same way as) a customer's
-            # own resolution-check answer.
-            button_reply = message.get("interactive", {}).get("button_reply", {})
-            button_id = button_reply.get("id", "")
+            # mirrors the customer-side handling below, but routed to the
+            # rep-specific handler since it must never be confused with
+            # (or looked up the same way as) a customer's own
+            # resolution-check answer.
+            button_id = _extract_resolution_button_id(message)
             if button_id:
                 background_tasks.add_task(_process_rep_resolution_check_reply, from_number, button_id, message_id)
             else:
-                logger.info("Ignoring interactive message with no button_reply.id from rep phone %s", from_number)
+                logger.info("Ignoring unrecognized button click from rep phone %s: %r", from_number, message.get(msg_type))
         else:
             logger.info("Ignoring unsupported message type '%s' from rep phone %s", msg_type, from_number)
         return {"status": "accepted"}
 
-    if msg_type == "interactive":
+    if msg_type in ("button", "interactive"):
         # A customer tapping a Quick Reply button on a template (currently
         # only the "was your enquiry resolved?" Yes/No check - see
-        # _send_resolution_checks/_process_resolution_check_reply). Meta
-        # reports this as interactive.button_reply.id (the button's
-        # developer-set payload) rather than free text.
-        button_reply = message.get("interactive", {}).get("button_reply", {})
-        button_id = button_reply.get("id", "")
+        # _send_resolution_checks/_process_resolution_check_reply). Meta's
+        # ACTUAL shape for a template's Quick Reply buttons is
+        # type=="button" with button.payload/button.text - NOT
+        # interactive.button_reply (that shape is for List Messages /
+        # dynamically-sent interactive messages, never templates). This
+        # was originally built for the wrong shape and silently dropped
+        # every real button click since launch - see
+        # _extract_resolution_button_id for both shapes, kept for safety.
+        button_id = _extract_resolution_button_id(message)
         if button_id:
             background_tasks.add_task(_process_resolution_check_reply, from_number, button_id, message_id)
         else:
-            logger.info("Ignoring interactive message with no button_reply.id from %s", from_number)
+            logger.info("Ignoring unrecognized button click from %s: %r", from_number, message.get(msg_type))
         return {"status": "accepted"}
 
     if msg_type == "text":
