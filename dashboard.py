@@ -204,6 +204,21 @@ def dashboard_page(request: Request, start: str = "", end: str = "", phone: str 
     ))
 
 
+_RESOLUTION_LABELS_XLSX = {"yes": "Resolved", "no": "Not resolved"}
+_CONFIDENCE_LABELS_XLSX = {"context_match": "Confirmed", "fallback_most_recent": "Best guess", "unresolved": "Unresolved"}
+_OUTCOME_LABELS_XLSX = {"new": "New", "contacted": "Contacted", "quoted": "Quoted", "won": "Won", "lost": "Lost"}
+
+
+def _style_header_row(ws):
+    """Bold, frozen header row on every sheet - makes a long exported
+    sheet actually usable (matches every prior sheet's intent, just
+    finally applied consistently instead of ad hoc column widths only)."""
+    from openpyxl.styles import Font
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    ws.freeze_panes = "A2"
+
+
 @router.get("/dashboard/export")
 def export_excel(request: Request, start: str = "", end: str = ""):
     if not _is_logged_in(request):
@@ -214,72 +229,144 @@ def export_excel(request: Request, start: str = "", end: str = ""):
     end = end or default_end
 
     from openpyxl import Workbook
+    from openpyxl.styles import Font
 
     wb = Workbook()
 
-    ws = wb.active
-    ws.title = "Messages"
-    ws.append(["Timestamp (UTC)", "Phone", "Company", "Direction", "Message", "Escalated"])
+    # ---- Overview: mirrors the dashboard's top KPI cards, so opening the
+    # export gives the same at-a-glance summary as opening the dashboard
+    # itself, before drilling into the detail sheets below. ----
+    ws0 = wb.active
+    ws0.title = "Overview"
+    stats = store.get_stats(start, end)
+    all_leads_list, leads_total = store.get_leads_list(start, end)  # page_size=None -> every lead; reused below for Lead Details too
+    outcome_breakdown = store.get_outcome_breakdown(start, end)
+    won_count = next((b["count"] for b in outcome_breakdown if b["outcome"] == "won"), 0)
+    won_amount = sum((row.get("outcome_amount") or 0) for row in all_leads_list if row.get("outcome") == "won")
+    meta_cost_overview = store.get_meta_cost_summary(start, end)
+
+    ws0.append(["Würth UAE WhatsApp Agent - Report", ""])
+    ws0.append(["Date range", f"{start} to {end} (Gulf Standard Time, UTC+4)"])
+    ws0.append(["Generated", _fmt_ts(datetime.now(timezone.utc))])
+    ws0.append([])
+    ws0.append(["Metric", "Value"])
+    ws0.append(["Messages received", stats["messages_received"]])
+    ws0.append(["Replies sent", stats["replies_sent"]])
+    ws0.append(["Unique customers", stats["unique_customers"]])
+    ws0.append(["Sales leads generated", leads_total])
+    ws0.append(["Deals won", won_count])
+    ws0.append(["Total won amount (AED)", round(won_amount, 2)])
+    ws0.append(["Estimated Meta API cost (USD)", round(meta_cost_overview["total_cost_usd"], 2)])
+    ws0.append([])
+    ws0.append(["Lead pipeline breakdown", ""])
+    ws0.append(["Stage", "Count"])
+    for b in outcome_breakdown:
+        ws0.append([_OUTCOME_LABELS_XLSX[b["outcome"]], b["count"]])
+    for col_letter, width in zip("AB", [32, 46]):
+        ws0.column_dimensions[col_letter].width = width
+    ws0["A1"].font = Font(bold=True, size=13)
+
+    # ---- Messages: full transcript across every customer, Gulf time. ----
+    ws = wb.create_sheet("Messages")
+    ws.append(["Timestamp (Gulf Time)", "Phone", "Company", "Direction", "Message", "Escalated"])
     for row in store.get_all_messages(start, end):
         ws.append([
-            str(row["created_at"]), row["phone"], row["company_name"],
+            _fmt_ts(row["created_at"]), row["phone"], row["company_name"],
             "Customer" if row["direction"] == "in" else "Bot",
             row["message"], "Yes" if row["escalated"] else "No",
         ])
-    for col_letter, width in zip("ABCDEF", [26, 16, 24, 10, 60, 10]):
+    for col_letter, width in zip("ABCDEF", [20, 16, 24, 10, 60, 10]):
         ws.column_dimensions[col_letter].width = width
+    _style_header_row(ws)
 
+    # ---- Customers ----
     ws2 = wb.create_sheet("Customers")
-    ws2.append(["Phone", "Company", "Sales Rep", "Message Count", "Last Message (UTC)"])
+    ws2.append(["Phone", "Company", "Sales Rep", "Message Count", "Last Message (Gulf Time)"])
     all_customers, _ = store.get_customers_summary(start, end)  # page_size=None -> every customer, not just one dashboard page
     for row in all_customers:
-        ws2.append([row["phone"], row["company_name"], row["rep_name"], row["message_count"], str(row["last_message_at"])])
-    for col_letter, width in zip("ABCDE", [16, 24, 20, 14, 26]):
+        ws2.append([row["phone"], row["company_name"], row["rep_name"], row["message_count"], _fmt_ts(row["last_message_at"])])
+    for col_letter, width in zip("ABCDE", [16, 24, 20, 14, 20]):
         ws2.column_dimensions[col_letter].width = width
+    _style_header_row(ws2)
 
+    # ---- Daily Summary ----
     ws3 = wb.create_sheet("Daily Summary")
     ws3.append(["Date", "Messages Received", "Replies Sent"])
     for row in store.get_daily_counts(start, end):
         ws3.append([row["day"], row["received"], row["sent"]])
     for col_letter, width in zip("ABC", [14, 18, 14]):
         ws3.column_dimensions[col_letter].width = width
+    _style_header_row(ws3)
 
+    # ---- Sales Leads (by rep) ----
     ws4 = wb.create_sheet("Sales Leads")
-    ws4.append(["Sales Rep", "Leads Generated", "Unique Customers", "Last Lead (UTC)", "Failed Notifications"])
+    ws4.append(["Sales Rep", "Leads Generated", "Unique Customers", "Last Lead (Gulf Time)", "Failed Notifications"])
     all_leads_summary, _ = store.get_leads_summary(start, end)  # page_size=None -> every rep
     for row in all_leads_summary:
-        ws4.append([row["rep_name"], row["lead_count"], row["customer_count"], str(row["last_lead_at"]), row["failed_notifications"]])
-    for col_letter, width in zip("ABCDE", [22, 16, 18, 26, 18]):
+        ws4.append([row["rep_name"], row["lead_count"], row["customer_count"], _fmt_ts(row["last_lead_at"]), row["failed_notifications"]])
+    for col_letter, width in zip("ABCDE", [22, 16, 18, 20, 18]):
         ws4.column_dimensions[col_letter].width = width
+    _style_header_row(ws4)
 
+    # ---- Lead Details: every field shown on the dashboard's Recent Leads
+    # table, including the Outcome pipeline stage + deal amount that was
+    # previously missing from the export entirely. ----
     ws5 = wb.create_sheet("Lead Details")
-    ws5.append(["Timestamp (UTC)", "Phone", "Company", "Sales Rep", "Customer Enquiry", "Priority", "Status", "Delivery", "Rep Response", "Response Confidence", "Resolved? (Customer)", "Resolved? (Rep)", "Marked False Positive"])
-    all_leads_list, _ = store.get_leads_list(start, end)  # page_size=None -> every lead
-    _RESOLUTION_LABELS_XLSX = {"yes": "Resolved", "no": "Not resolved"}
+    ws5.append([
+        "Timestamp (Gulf Time)", "Phone", "Company", "Sales Rep", "Customer Enquiry", "Priority", "Status",
+        "Delivery", "Rep Response", "Response Confidence", "Outcome", "Deal Amount (AED)",
+        "Resolved? (Customer)", "Resolved? (Rep)", "Marked False Positive",
+    ])
+    # all_leads_list already fetched above for the Overview sheet's totals - reused here, not re-queried.
     for row in all_leads_list:
-        response_confidence = {"context_match": "Confirmed", "fallback_most_recent": "Best guess"}.get(row.get("rep_reply_method"), "")
+        response_confidence = _CONFIDENCE_LABELS_XLSX.get(row.get("rep_reply_method"), "")
         ws5.append([
-            str(row["created_at"]), row["phone"], row["company_name"], row["rep_name"], row["enquiry_text"],
+            _fmt_ts(row["created_at"]), row["phone"], row["company_name"], row["rep_name"], row["enquiry_text"],
             (row.get("priority") or "").title(), row["status"], row["delivery_status"],
             row.get("rep_reply_text") or "", response_confidence,
+            _OUTCOME_LABELS_XLSX.get(row.get("outcome"), "New"),
+            round(row["outcome_amount"], 2) if row.get("outcome_amount") else "",
             _RESOLUTION_LABELS_XLSX.get(row.get("resolution_check_response"), ""),
             _RESOLUTION_LABELS_XLSX.get(row.get("rep_resolution_check_response"), ""),
             "Yes" if row.get("false_positive") else "No",
         ])
-    for col_letter, width in zip("ABCDEFGHIJKLM", [26, 16, 24, 20, 60, 10, 10, 14, 40, 16, 14, 14, 16]):
+    for col_letter, width in zip("ABCDEFGHIJKLMNO", [20, 16, 24, 20, 60, 10, 10, 14, 40, 16, 12, 16, 14, 14, 16]):
         ws5.column_dimensions[col_letter].width = width
+    _style_header_row(ws5)
 
+    # ---- Rep Replies: flat list of every inbound rep reply (unchanged
+    # purpose - a dedicated view of rep engagement), Gulf time. ----
     ws6 = wb.create_sheet("Rep Replies")
-    ws6.append(["Timestamp (UTC)", "Rep", "Rep Phone", "Customer", "Customer Phone", "Reply", "Match Confidence"])
-    _CONFIDENCE_LABELS_XLSX = {"context_match": "Confirmed", "fallback_most_recent": "Best guess", "unresolved": "Unresolved"}
+    ws6.append(["Timestamp (Gulf Time)", "Rep", "Rep Phone", "Customer", "Customer Phone", "Reply", "Match Confidence"])
     for row in store.get_rep_replies_list(start, end):
         ws6.append([
-            str(row["created_at"]), row["rep_name"], row["rep_phone"], row["company_name"], row["customer_phone"],
+            _fmt_ts(row["created_at"]), row["rep_name"], row["rep_phone"], row["company_name"], row["customer_phone"],
             row["reply_text"], _CONFIDENCE_LABELS_XLSX.get(row["resolution_method"], row["resolution_method"]),
         ])
-    for col_letter, width in zip("ABCDEFG", [26, 20, 16, 24, 16, 60, 16]):
+    for col_letter, width in zip("ABCDEFG", [20, 20, 16, 24, 16, 60, 16]):
         ws6.column_dimensions[col_letter].width = width
+    _style_header_row(ws6)
 
+    # ---- Escalation Transcripts: the dashboard's per-rep transcript view
+    # (outbound escalation alerts interleaved chronologically with inbound
+    # rep replies) - previously dashboard-only, one rep at a time; this
+    # covers every rep active in the date range in one sheet. ----
+    ws6b = wb.create_sheet("Escalation Transcripts")
+    ws6b.append(["Rep", "Rep Phone", "Timestamp (Gulf Time)", "Direction", "Customer/Company", "Message", "Detail"])
+    for rep in store.get_reps_summary(start, end):
+        for msg in store.get_rep_transcript(rep["rep_phone"], start, end):
+            ws6b.append([
+                rep["rep_name"] or rep["rep_phone"], rep["rep_phone"], _fmt_ts(msg["created_at"]),
+                "Alert to rep" if msg["direction"] == "out" else "Rep reply",
+                msg.get("company_name") or msg.get("customer_phone") or "",
+                msg["message_text"],
+                _CONFIDENCE_LABELS_XLSX.get(msg.get("extra"), msg.get("extra") or ""),
+            ])
+    for col_letter, width in zip("ABCDEFG", [20, 16, 20, 14, 24, 60, 16]):
+        ws6b.column_dimensions[col_letter].width = width
+    _style_header_row(ws6b)
+
+    # ---- Meta API Cost ----
     ws7 = wb.create_sheet("Meta API Cost")
     ws7.append(["Category", "Messages", "Billable Messages", "Estimated Cost (USD)"])
     meta_cost = store.get_meta_cost_summary(start, end)
@@ -288,13 +375,16 @@ def export_excel(request: Request, start: str = "", end: str = ""):
     ws7.append(["TOTAL", "", meta_cost["total_billable_messages"], round(meta_cost["total_cost_usd"], 2)])
     for col_letter, width in zip("ABCD", [18, 14, 18, 20]):
         ws7.column_dimensions[col_letter].width = width
+    _style_header_row(ws7)
 
+    # ---- Template Usage ----
     ws8 = wb.create_sheet("Template Usage")
     ws8.append(["Template", "Sent", "Delivered", "Failed"])
     for row in store.get_template_usage_summary(start, end):
         ws8.append([row["template_name"], row["send_count"], row["success_count"], row["send_count"] - row["success_count"]])
     for col_letter, width in zip("ABCD", [30, 10, 12, 10]):
         ws8.column_dimensions[col_letter].width = width
+    _style_header_row(ws8)
 
     buf = io.BytesIO()
     wb.save(buf)
