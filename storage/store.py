@@ -195,6 +195,16 @@ def _init_schema():
             );
             CREATE INDEX IF NOT EXISTS idx_message_pricing_wamid ON message_pricing (whatsapp_message_id);
             CREATE INDEX IF NOT EXISTS idx_message_pricing_created_at ON message_pricing (created_at);
+
+            -- "Was your enquiry resolved?" customer follow-up (Yes/No quick-
+            -- reply template), sent LEAD_RESOLUTION_CHECK_HOURS after the
+            -- assigned rep's first reply to a lead. A separate concept from
+            -- leads.outcome (the sales pipeline stage - New/Contacted/
+            -- Quoted/Won/Lost) - this tracks service quality/CSAT, not the
+            -- sales outcome, so it never overwrites outcome.
+            ALTER TABLE leads ADD COLUMN IF NOT EXISTS resolution_check_sent_at TIMESTAMPTZ;
+            ALTER TABLE leads ADD COLUMN IF NOT EXISTS resolution_check_response TEXT;  -- 'yes' | 'no'
+            ALTER TABLE leads ADD COLUMN IF NOT EXISTS resolution_check_responded_at TIMESTAMPTZ;
             """)
 
             # One-time backfill: group historical escalated messages into
@@ -575,6 +585,89 @@ def mark_lead_followup_sent(lead_id: int):
     try:
         with conn.cursor() as cur:
             cur.execute("UPDATE leads SET followup_sent_at = %s WHERE id = %s", (datetime.now(timezone.utc), lead_id))
+        conn.commit()
+    finally:
+        _put_conn(conn)
+
+
+def get_leads_needing_resolution_check():
+    """Leads where the assigned rep HAS replied (opposite condition from
+    get_leads_needing_followup, which nudges the rep when they haven't) and
+    it's been LEAD_RESOLUTION_CHECK_HOURS since that rep's FIRST reply, and
+    we haven't already sent this customer-facing "was this resolved?"
+    check. Fires once per lead - resolution_check_sent_at being set stops
+    it being sent again, even if the customer never answers."""
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT l.id, l.phone, COALESCE(cu.company_name, '') AS company_name
+                FROM leads l
+                LEFT JOIN customers cu ON cu.phone = l.phone
+                JOIN LATERAL (
+                    SELECT MIN(rr.created_at) AS first_reply_at
+                    FROM rep_replies rr WHERE rr.lead_id = l.id
+                ) first_reply ON true
+                WHERE l.resolution_check_sent_at IS NULL
+                  AND first_reply.first_reply_at IS NOT NULL
+                  AND first_reply.first_reply_at <= now() - (%s || ' hours')::interval
+            """, (config.LEAD_RESOLUTION_CHECK_HOURS,))
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        _put_conn(conn)
+
+
+def mark_resolution_check_sent(lead_id: int):
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE leads SET resolution_check_sent_at = %s WHERE id = %s",
+                (datetime.now(timezone.utc), lead_id),
+            )
+        conn.commit()
+    finally:
+        _put_conn(conn)
+
+
+def get_lead_awaiting_resolution_check(phone: str):
+    """Most recent lead for this phone that has a resolution check sent
+    but no response yet - used to match an incoming Yes/No button click
+    back to the right lead (see main.py's button-reply handling). Returns
+    None if there's no pending check for this customer."""
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, phone, status FROM leads
+                WHERE phone = %s AND resolution_check_sent_at IS NOT NULL AND resolution_check_response IS NULL
+                ORDER BY resolution_check_sent_at DESC LIMIT 1
+            """, (phone,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        _put_conn(conn)
+
+
+def record_resolution_check_response(lead_id: int, response: str):
+    """response: 'yes' or 'no'. A 'yes' also closes the lead - the customer
+    confirmed their enquiry is resolved, so there's nothing more open to
+    track. A 'no' leaves status untouched (still open) since the
+    re-escalation this triggers means the rep still has work to do."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            if response == "yes":
+                cur.execute(
+                    "UPDATE leads SET resolution_check_response = %s, resolution_check_responded_at = %s, "
+                    "status = 'closed' WHERE id = %s",
+                    (response, datetime.now(timezone.utc), lead_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE leads SET resolution_check_response = %s, resolution_check_responded_at = %s WHERE id = %s",
+                    (response, datetime.now(timezone.utc), lead_id),
+                )
         conn.commit()
     finally:
         _put_conn(conn)
@@ -1004,6 +1097,7 @@ def get_leads_list(start: str = None, end: str = None, page: int = 1, page_size:
                        l.outcome_amount,
                        l.outcome_note,
                        l.outcome_updated_at,
+                       l.resolution_check_response,
                        attempts.any_success,
                        attempts.attempt_count,
                        attempts.attempt_summary,
@@ -1036,6 +1130,7 @@ def get_leads_list(start: str = None, end: str = None, page: int = 1, page_size:
             keys = ["lead_id", "created_at", "phone", "company_name", "rep_name", "enquiry_text", "status",
                      "priority", "false_positive",
                      "outcome", "outcome_amount", "outcome_note", "outcome_updated_at",
+                     "resolution_check_response",
                      "any_success", "attempt_count", "attempt_summary",
                      "rep_reply_text", "rep_reply_at", "rep_reply_method"]
             rows = [dict(zip(keys, row)) for row in cur.fetchall()]

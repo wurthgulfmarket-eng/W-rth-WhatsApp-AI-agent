@@ -78,6 +78,12 @@ services:
         sync: false
       - key: WHATSAPP_REP_REMINDER_TEMPLATE_LANGUAGE
         value: en
+      - key: LEAD_RESOLUTION_CHECK_HOURS
+        value: "24"
+      - key: WHATSAPP_RESOLUTION_CHECK_TEMPLATE_NAME
+        sync: false
+      - key: WHATSAPP_RESOLUTION_CHECK_TEMPLATE_LANGUAGE
+        value: en
       - key: WHATSAPP_RATE_UTILITY_USD
         value: "0.04"
       - key: WHATSAPP_RATE_MARKETING_USD

@@ -144,6 +144,16 @@ class Config:
     WHATSAPP_REP_REMINDER_TEMPLATE_NAME = os.getenv("WHATSAPP_REP_REMINDER_TEMPLATE_NAME", "")
     WHATSAPP_REP_REMINDER_TEMPLATE_LANGUAGE = os.getenv("WHATSAPP_REP_REMINDER_TEMPLATE_LANGUAGE", "en")
 
+    # Customer-facing "was your enquiry resolved?" Yes/No follow-up - sent
+    # this many hours after the assigned rep's FIRST reply to a lead (a
+    # separate concept from LEAD_FOLLOWUP_HOURS above, which nudges the REP
+    # when they haven't replied at all). Requires a Meta-approved template
+    # with two Quick Reply buttons (see README's WhatsApp template setup
+    # section) - until the template name is set, this safely no-ops.
+    LEAD_RESOLUTION_CHECK_HOURS = int(os.getenv("LEAD_RESOLUTION_CHECK_HOURS", "24"))
+    WHATSAPP_RESOLUTION_CHECK_TEMPLATE_NAME = os.getenv("WHATSAPP_RESOLUTION_CHECK_TEMPLATE_NAME", "")
+    WHATSAPP_RESOLUTION_CHECK_TEMPLATE_LANGUAGE = os.getenv("WHATSAPP_RESOLUTION_CHECK_TEMPLATE_LANGUAGE", "en")
+
     # Per-category USD rate for the dashboard's Meta API cost estimate.
     # Meta moved to per-message pricing (category-based) in mid-2025; the
     # actual rate depends on your specific WhatsApp BSP/reseller contract,
