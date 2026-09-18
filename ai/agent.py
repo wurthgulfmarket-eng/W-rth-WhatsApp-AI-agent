@@ -203,18 +203,43 @@ def is_company_change_signal(message: str) -> bool:
 
 # Lets a sales rep report what happened with a lead just by texting
 # naturally in their WhatsApp reply ("Called them, they said WON at 2500
-# great deal!") instead of needing to open the dashboard - a lightweight,
-# optional shortcut alongside the dashboard's own outcome dropdown. Matched
-# as whole words anywhere in the message (not just a prefix), since reps
-# won't always lead with the keyword. Priority order when more than one
-# keyword appears in the same reply: a rep confirming a deal actually
-# closed ("won") should never be shadowed by an earlier, now-superseded
-# mention of "contacted" in the same message.
+# great deal!", "Order placed", "Already connected with the customer")
+# instead of needing to open the dashboard - a lightweight, optional
+# shortcut alongside the dashboard's own outcome dropdown. Matched as
+# whole words/phrases anywhere in the message (not just a prefix), since
+# reps won't always lead with the keyword and rarely use the exact words
+# "won"/"lost"/"quoted"/"contacted" themselves - real rep replies seen in
+# production: "Order placed", "Already responded", "Shared price TDS and
+# lead time", "Connect to customer", none of which the original bare-word
+# list caught. Priority order when more than one phrase matches the same
+# reply: a rep confirming a deal actually closed ("won"/"order placed")
+# should never be shadowed by an earlier, now-superseded mention of
+# "contacted" in the same message; "lost" is checked before "contacted"
+# for the same reason ("not interested, already contacted them" is a
+# loss, not just contact).
 _REP_OUTCOME_KEYWORDS = [
-    ("won", re.compile(r"\bwon\b", re.IGNORECASE)),
-    ("lost", re.compile(r"\blost\b", re.IGNORECASE)),
-    ("quoted", re.compile(r"\bquoted\b", re.IGNORECASE)),
-    ("contacted", re.compile(r"\bcontacted\b", re.IGNORECASE)),
+    ("won", re.compile(
+        r"\bwon\b|order (placed|confirmed)|deal (closed|done)|customer (confirmed|agreed)|"
+        r"po (received|issued)|purchase order",
+        re.IGNORECASE,
+    )),
+    ("lost", re.compile(
+        r"\blost\b|not interested|went with (another|a different)|no longer (interested|needed)|"
+        r"cancel(l?ed)? (the )?(order|enquiry|deal)|order (was )?cancel(l?ed)?|declined|no budget",
+        re.IGNORECASE,
+    )),
+    ("quoted", re.compile(
+        r"\bquoted\b|sent (the |a )?quote|shared (the )?(price|quotation|quote)|price shared|"
+        r"quotation sent|sent (the )?pricing",
+        re.IGNORECASE,
+    )),
+    ("contacted", re.compile(
+        r"\bcontacted\b|already (responded|connected|spoke|called)|i connect(ed)? with|"
+        r"connected with|connect(ing)? (to|with) (the )?customer|spoke (to|with) (the )?customer|"
+        r"called (the )?customer|reached out|waiting for (the )?(confirmation|customer|update|response)|"
+        r"followed up|following up",
+        re.IGNORECASE,
+    )),
 ]
 # A number that looks like a deal amount - optional "AED"/currency prefix or
 # suffix, digits with optional thousands separators/decimals. Deliberately
