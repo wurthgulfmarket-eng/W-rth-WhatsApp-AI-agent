@@ -244,12 +244,19 @@ visible label) to exactly `resolution_yes` and `resolution_no` — the code
 matches on this ID, not the button text, so the visible label can be
 anything ("Yes"/"No" is simplest).
 
+**Use numbered placeholders (`{{1}}`, `{{2}}`), not named ones** — WhatsApp
+Manager's template editor rejects `{{customer_name}}`-style placeholders at
+creation time ("Variable parameters must be whole numbers with two sets of
+curly brackets"), even though the Cloud API itself accepts named parameters
+on send. The code sends positional parameters to match:
+
 **Customer-facing template** (`WHATSAPP_RESOLUTION_CHECK_TEMPLATE_NAME`):
 
 ```
-Hi {{customer_name}}, following up on your recent enquiry with Würth UAE — was everything resolved to your satisfaction?
+Hi {{1}}, following up on your recent enquiry with Würth UAE — was everything resolved to your satisfaction?
 ```
-Buttons: `Yes` (payload `resolution_yes`), `No` (payload `resolution_no`).
+`{{1}}` = the customer's company name. Buttons: `Yes` (payload
+`resolution_yes`), `No` (payload `resolution_no`).
 
 A customer's answer here is the one that matters for lead status: **Yes**
 closes the lead and thanks them; **No** re-escalates to the assigned rep
@@ -260,11 +267,13 @@ again.
 separate and optional — leave unset to only ask the customer):
 
 ```
-Hi {{rep_name}}, did you manage to resolve {{customer_name}}'s enquiry?
+Hi {{1}}, did you manage to resolve {{2}}'s enquiry?
 ```
-Buttons: same payload IDs, `resolution_yes` / `resolution_no`. This is a
-second, informational signal only — a rep's answer never changes the
-lead's status; only the customer's own answer does.
+`{{1}}` = the rep's first name, `{{2}}` = the customer's company name — order
+matters, the code sends them in this exact sequence. Buttons: same payload
+IDs, `resolution_yes` / `resolution_no`. This is a second, informational
+signal only — a rep's answer never changes the lead's status; only the
+customer's own answer does.
 
 Set both env vars once approved (either can be left blank to disable that
 one side independently). Two more scheduled endpoints need calling

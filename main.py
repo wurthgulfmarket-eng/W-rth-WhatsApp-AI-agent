@@ -187,8 +187,13 @@ def _send_resolution_checks():
 
     for lead in leads:
         company_or_name = sanitize_template_param(lead["company_name"]) or "there"
+        # Positional {{1}} parameter, not a named one - some WhatsApp
+        # Manager accounts reject named placeholders at template-creation
+        # time ("must be whole numbers with two sets of curly brackets"),
+        # so this template's body must be written with {{1}} and the send
+        # call must match with a plain "text" parameter (no parameter_name).
         components = [{"type": "body", "parameters": [
-            {"type": "text", "parameter_name": "customer_name", "text": company_or_name},
+            {"type": "text", "text": company_or_name},
         ]}]
 
         normalized_phone = to_whatsapp_number(lead["phone"])
@@ -250,9 +255,11 @@ def _send_rep_resolution_checks():
     for lead in leads:
         company_or_name = sanitize_template_param(lead["company_name"]) or "the customer"
         rep_first_name = sanitize_template_param((lead["rep_name"] or "").split(" ")[0]) or "there"
+        # Positional {{1}}/{{2}} - order in this list IS the parameter
+        # number ({{1}} = first item), see the note in _send_resolution_checks.
         components = [{"type": "body", "parameters": [
-            {"type": "text", "parameter_name": "rep_name", "text": rep_first_name},
-            {"type": "text", "parameter_name": "customer_name", "text": company_or_name},
+            {"type": "text", "text": rep_first_name},
+            {"type": "text", "text": company_or_name},
         ]}]
 
         normalized_rep_phone = to_whatsapp_number(lead["rep_phone"])
