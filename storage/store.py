@@ -205,6 +205,17 @@ def _init_schema():
             ALTER TABLE leads ADD COLUMN IF NOT EXISTS resolution_check_sent_at TIMESTAMPTZ;
             ALTER TABLE leads ADD COLUMN IF NOT EXISTS resolution_check_response TEXT;  -- 'yes' | 'no'
             ALTER TABLE leads ADD COLUMN IF NOT EXISTS resolution_check_responded_at TIMESTAMPTZ;
+
+            -- Same "was it resolved?" check, but asked of the REP instead
+            -- of the customer - a second, independent signal alongside the
+            -- customer's own answer above. Sent at the same time as the
+            -- customer check (same LEAD_RESOLUTION_CHECK_HOURS trigger),
+            -- to a different template/number, tracked in its own columns
+            -- so a rep's answer never overwrites or is confused with the
+            -- customer's.
+            ALTER TABLE leads ADD COLUMN IF NOT EXISTS rep_resolution_check_sent_at TIMESTAMPTZ;
+            ALTER TABLE leads ADD COLUMN IF NOT EXISTS rep_resolution_check_response TEXT;  -- 'yes' | 'no'
+            ALTER TABLE leads ADD COLUMN IF NOT EXISTS rep_resolution_check_responded_at TIMESTAMPTZ;
             """)
 
             # One-time backfill: group historical escalated messages into
@@ -617,6 +628,36 @@ def get_leads_needing_resolution_check():
         _put_conn(conn)
 
 
+def get_leads_needing_rep_resolution_check():
+    """Same eligibility window as get_leads_needing_resolution_check (it's
+    been LEAD_RESOLUTION_CHECK_HOURS since the rep's first reply), but for
+    the REP-side check instead - gated on rep_resolution_check_sent_at
+    (its own column) rather than the customer-side one, and only for leads
+    with a known rep_phone (nothing to send to otherwise). Independent of
+    whether the customer-side check has already fired or been answered -
+    both checks are sent on the same trigger, tracked separately."""
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT l.id, l.phone, COALESCE(cu.company_name, '') AS company_name,
+                       COALESCE(cu.rep_name, '') AS rep_name, COALESCE(cu.rep_phone, '') AS rep_phone
+                FROM leads l
+                LEFT JOIN customers cu ON cu.phone = l.phone
+                JOIN LATERAL (
+                    SELECT MIN(rr.created_at) AS first_reply_at
+                    FROM rep_replies rr WHERE rr.lead_id = l.id
+                ) first_reply ON true
+                WHERE l.rep_resolution_check_sent_at IS NULL
+                  AND COALESCE(cu.rep_phone, '') != ''
+                  AND first_reply.first_reply_at IS NOT NULL
+                  AND first_reply.first_reply_at <= now() - (%s || ' hours')::interval
+            """, (config.LEAD_RESOLUTION_CHECK_HOURS,))
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        _put_conn(conn)
+
+
 def mark_resolution_check_sent(lead_id: int):
     conn = _get_conn()
     try:
@@ -668,6 +709,65 @@ def record_resolution_check_response(lead_id: int, response: str):
                     "UPDATE leads SET resolution_check_response = %s, resolution_check_responded_at = %s WHERE id = %s",
                     (response, datetime.now(timezone.utc), lead_id),
                 )
+        conn.commit()
+    finally:
+        _put_conn(conn)
+
+
+def mark_rep_resolution_check_sent(lead_id: int):
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE leads SET rep_resolution_check_sent_at = %s WHERE id = %s",
+                (datetime.now(timezone.utc), lead_id),
+            )
+        conn.commit()
+    finally:
+        _put_conn(conn)
+
+
+def get_rep_lead_awaiting_resolution_check(rep_phone: str):
+    """Most recent lead assigned to this rep (by their current
+    customers.rep_phone) that has a rep-side resolution check sent but no
+    rep response yet - used to match an incoming Yes/No button click from
+    a REP back to the right lead (mirrors get_lead_awaiting_resolution_check,
+    which does the same for the customer side). A rep can have more than
+    one lead awaiting their answer; this picks the most recently sent
+    check, same "most recent" tie-break already used elsewhere (e.g.
+    resolve_rep_reply_lead's fallback_most_recent)."""
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT l.id, l.phone, l.status
+                FROM leads l
+                JOIN customers cu ON cu.phone = l.phone
+                WHERE cu.rep_phone = %s
+                  AND l.rep_resolution_check_sent_at IS NOT NULL
+                  AND l.rep_resolution_check_response IS NULL
+                ORDER BY l.rep_resolution_check_sent_at DESC LIMIT 1
+            """, (rep_phone,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+    finally:
+        _put_conn(conn)
+
+
+def record_rep_resolution_check_response(lead_id: int, response: str):
+    """response: 'yes' or 'no' - the rep's own answer, tracked separately
+    from the customer's (see get_leads_needing_resolution_check's schema
+    comment). Doesn't touch leads.status on its own - the customer's
+    answer (record_resolution_check_response) is what actually closes a
+    lead; the rep's answer is a second, independent signal only."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE leads SET rep_resolution_check_response = %s, "
+                "rep_resolution_check_responded_at = %s WHERE id = %s",
+                (response, datetime.now(timezone.utc), lead_id),
+            )
         conn.commit()
     finally:
         _put_conn(conn)
@@ -1098,6 +1198,7 @@ def get_leads_list(start: str = None, end: str = None, page: int = 1, page_size:
                        l.outcome_note,
                        l.outcome_updated_at,
                        l.resolution_check_response,
+                       l.rep_resolution_check_response,
                        attempts.any_success,
                        attempts.attempt_count,
                        attempts.attempt_summary,
@@ -1130,7 +1231,7 @@ def get_leads_list(start: str = None, end: str = None, page: int = 1, page_size:
             keys = ["lead_id", "created_at", "phone", "company_name", "rep_name", "enquiry_text", "status",
                      "priority", "false_positive",
                      "outcome", "outcome_amount", "outcome_note", "outcome_updated_at",
-                     "resolution_check_response",
+                     "resolution_check_response", "rep_resolution_check_response",
                      "any_success", "attempt_count", "attempt_summary",
                      "rep_reply_text", "rep_reply_at", "rep_reply_method"]
             rows = [dict(zip(keys, row)) for row in cur.fetchall()]

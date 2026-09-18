@@ -231,6 +231,70 @@ def send_resolution_checks(token: str, background_tasks: BackgroundTasks):
     return {"status": "resolution_checks_started"}
 
 
+def _send_rep_resolution_checks():
+    """Sends the REP (not the customer) the same Yes/No quick-reply
+    question, on the same LEAD_RESOLUTION_CHECK_HOURS trigger - a second,
+    independent confirmation signal alongside the customer's own answer
+    (see storage.store.get_leads_needing_rep_resolution_check). The rep's
+    button-click answer is handled in receive_webhook's is_rep_number
+    branch. Must use a Meta-approved template with two Quick Reply
+    buttons - no-ops until one is configured, independent of whether the
+    customer-side template is set."""
+    if not config.WHATSAPP_REP_RESOLUTION_CHECK_TEMPLATE_NAME:
+        logger.info("WHATSAPP_REP_RESOLUTION_CHECK_TEMPLATE_NAME not set - skipping rep resolution checks")
+        return
+
+    leads = store.get_leads_needing_rep_resolution_check()
+    logger.info("Rep resolution check: %d lead(s) eligible", len(leads))
+
+    for lead in leads:
+        company_or_name = sanitize_template_param(lead["company_name"]) or "the customer"
+        rep_first_name = sanitize_template_param((lead["rep_name"] or "").split(" ")[0]) or "there"
+        components = [{"type": "body", "parameters": [
+            {"type": "text", "parameter_name": "rep_name", "text": rep_first_name},
+            {"type": "text", "parameter_name": "customer_name", "text": company_or_name},
+        ]}]
+
+        normalized_rep_phone = to_whatsapp_number(lead["rep_phone"])
+        whatsapp_message_id = None
+        error_detail = None
+        success = False
+        try:
+            resp = send_template_message(
+                normalized_rep_phone,
+                config.WHATSAPP_REP_RESOLUTION_CHECK_TEMPLATE_NAME,
+                config.WHATSAPP_REP_RESOLUTION_CHECK_TEMPLATE_LANGUAGE,
+                components,
+            )
+            whatsapp_message_id = resp.get("messages", [{}])[0].get("id")
+            success = True
+            store.mark_rep_resolution_check_sent(lead["id"])
+            logger.info("Sent rep resolution check to lead id=%s rep_phone=%s", lead["id"], lead["rep_phone"])
+        except WhatsAppError as e:
+            # Leave rep_resolution_check_sent_at NULL so this lead is
+            # retried on the next scheduled run instead of being silently
+            # dropped.
+            error_detail = str(e)
+            logger.error("Rep resolution check failed for lead id=%s rep_phone=%s: %s", lead["id"], lead["rep_phone"], e)
+
+        store.record_escalation_attempt(
+            None, lead["phone"], "rep_resolution_check", normalized_rep_phone, lead["rep_name"],
+            "template", config.WHATSAPP_REP_RESOLUTION_CHECK_TEMPLATE_NAME, success, whatsapp_message_id, error_detail,
+        )
+
+
+# Sends the rep-side "did you resolve this?" check for any lead eligible
+# per LEAD_RESOLUTION_CHECK_HOURS - see _send_rep_resolution_checks.
+# Intended to be called periodically by the same external scheduler.
+# Protected the same way as the other /admin endpoints.
+@app.post("/admin/send-rep-resolution-checks")
+def send_rep_resolution_checks(token: str, background_tasks: BackgroundTasks):
+    if token != config.WHATSAPP_VERIFY_TOKEN:
+        return Response(content="Forbidden", status_code=403)
+    background_tasks.add_task(_send_rep_resolution_checks)
+    return {"status": "rep_resolution_checks_started"}
+
+
 @app.on_event("startup")
 def _auto_rebuild_kb_if_missing():
     # Render's free tier disk is ephemeral - every deploy/restart wipes data/,
@@ -336,8 +400,21 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
             text = message.get("text", {}).get("body", "").strip()
             if text:
                 background_tasks.add_task(_process_rep_reply, from_number, text, message_id, context_id)
+        elif msg_type == "interactive":
+            # A rep tapping a Quick Reply button on the rep-side "did you
+            # resolve this?" check (see _send_rep_resolution_checks) -
+            # mirrors the customer-side interactive handling below, but
+            # routed to the rep-specific handler since it must never be
+            # confused with (or looked up the same way as) a customer's
+            # own resolution-check answer.
+            button_reply = message.get("interactive", {}).get("button_reply", {})
+            button_id = button_reply.get("id", "")
+            if button_id:
+                background_tasks.add_task(_process_rep_resolution_check_reply, from_number, button_id, message_id)
+            else:
+                logger.info("Ignoring interactive message with no button_reply.id from rep phone %s", from_number)
         else:
-            logger.info("Ignoring non-text message from rep phone %s", from_number)
+            logger.info("Ignoring unsupported message type '%s' from rep phone %s", msg_type, from_number)
         return {"status": "accepted"}
 
     if msg_type == "interactive":
@@ -452,6 +529,42 @@ def _process_resolution_check_reply(phone: str, button_id: str, message_id: str)
         logger.info("Lead id=%s marked NOT resolved by customer %s - re-escalated", lead["id"], phone)
     else:
         logger.warning("Unrecognized resolution-check button id %r from %s", button_id, phone)
+
+
+def _process_rep_resolution_check_reply(rep_phone: str, button_id: str, message_id: str):
+    """Handles the REP's Yes/No answer to the "did you resolve this?"
+    check (see _send_rep_resolution_checks) - a second, independent signal
+    alongside the customer's own answer to the same question. The
+    template's two Quick Reply buttons must use the same developer
+    payload IDs as the customer-side template ("resolution_yes"/
+    "resolution_no") for simplicity, but this handler is only ever reached
+    for a REP's number (see receive_webhook's is_rep_number branch), so
+    the two flows can never cross. Never touches leads.status - only the
+    customer's own answer closes a lead; this is purely a logged signal."""
+    try:
+        mark_as_read(message_id)
+    except WhatsAppError as e:
+        logger.warning("mark_as_read failed: %s", e)
+
+    lead = store.get_rep_lead_awaiting_resolution_check(rep_phone)
+    if not lead:
+        logger.info("Rep resolution check button from %s but no pending check found - ignoring", rep_phone)
+        return
+
+    if button_id == "resolution_yes":
+        store.record_rep_resolution_check_response(lead["id"], "yes")
+        logger.info("Lead id=%s marked resolved by rep %s", lead["id"], rep_phone)
+    elif button_id == "resolution_no":
+        store.record_rep_resolution_check_response(lead["id"], "no")
+        logger.info("Lead id=%s marked NOT resolved by rep %s", lead["id"], rep_phone)
+    else:
+        logger.warning("Unrecognized rep resolution-check button id %r from %s", button_id, rep_phone)
+        return
+
+    try:
+        send_text_message(to_whatsapp_number(rep_phone), "Thanks for confirming!")
+    except WhatsAppError as e:
+        logger.warning("Failed to send rep resolution-check acknowledgment to %s: %s", rep_phone, e)
 
 
 def _process_text_message(phone: str, text: str, message_id: str):

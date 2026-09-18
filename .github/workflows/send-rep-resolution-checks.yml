@@ -1,0 +1,20 @@
+name: Send rep resolution-check follow-ups
+
+on:
+  schedule:
+    # 06:45 UTC daily (~10:45 Gulf Standard Time) - offset from the
+    # customer-side resolution check workflow (06:30) so they don't
+    # compete for the same Postgres connection pool slot.
+    - cron: "45 6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /admin/send-rep-resolution-checks
+        env:
+          RENDER_URL: ${{ secrets.RENDER_APP_URL }}
+          TOKEN: ${{ secrets.WHATSAPP_VERIFY_TOKEN }}
+        run: |
+          curl -sf -X POST "${RENDER_URL}/admin/send-rep-resolution-checks?token=${TOKEN}"

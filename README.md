@@ -233,6 +233,53 @@ via a daily GitHub Actions scheduled workflow — set `RENDER_APP_URL` and
 `WHATSAPP_VERIFY_TOKEN` as repo secrets (Settings > Secrets and variables >
 Actions) to enable it.
 
+## 9.5. "Was your enquiry resolved?" follow-up (optional)
+
+Once the assigned rep has replied to a lead, two Yes/No check-ins can fire
+`LEAD_RESOLUTION_CHECK_HOURS` later (default 24h) — one to the **customer**,
+one to the **rep** — each a second, independent confirmation signal. Both
+need a Meta-approved template with **two Quick Reply buttons**. In WhatsApp
+Manager, when adding the buttons, set their developer payload (not just the
+visible label) to exactly `resolution_yes` and `resolution_no` — the code
+matches on this ID, not the button text, so the visible label can be
+anything ("Yes"/"No" is simplest).
+
+**Customer-facing template** (`WHATSAPP_RESOLUTION_CHECK_TEMPLATE_NAME`):
+
+```
+Hi {{customer_name}}, following up on your recent enquiry with Würth UAE — was everything resolved to your satisfaction?
+```
+Buttons: `Yes` (payload `resolution_yes`), `No` (payload `resolution_no`).
+
+A customer's answer here is the one that matters for lead status: **Yes**
+closes the lead and thanks them; **No** re-escalates to the assigned rep
+(same path as a fresh lead) and lets the customer know it's been flagged
+again.
+
+**Rep-facing template** (`WHATSAPP_REP_RESOLUTION_CHECK_TEMPLATE_NAME`,
+separate and optional — leave unset to only ask the customer):
+
+```
+Hi {{rep_name}}, did you manage to resolve {{customer_name}}'s enquiry?
+```
+Buttons: same payload IDs, `resolution_yes` / `resolution_no`. This is a
+second, informational signal only — a rep's answer never changes the
+lead's status; only the customer's own answer does.
+
+Set both env vars once approved (either can be left blank to disable that
+one side independently). Two more scheduled endpoints need calling
+periodically, same as the day-1 reminder:
+
+```bash
+curl -X POST "https://<url>/admin/send-resolution-checks?token=<verify-token>"
+curl -X POST "https://<url>/admin/send-rep-resolution-checks?token=<verify-token>"
+```
+
+`.github/workflows/send-resolution-checks.yml` and
+`send-rep-resolution-checks.yml` do this automatically via daily GitHub
+Actions workflows, using the same `RENDER_APP_URL`/`WHATSAPP_VERIFY_TOKEN`
+repo secrets as the day-1 reminder workflow.
+
 ## 10. Admin dashboard
 
 Visit `<your-url>/dashboard` and log in with `DASHBOARD_ADMIN_USERNAME` /
@@ -265,6 +312,7 @@ See `.env.example` for the full list with inline comments. Grouped summary:
 | Database | `DATABASE_URL` (Postgres) |
 | Escalation | `FUZZY_MATCH_THRESHOLD`, `ESCALATION_NOTIFY_NUMBERS`, `WHATSAPP_ESCALATION_TEMPLATE_NAME`, `WHATSAPP_ESCALATION_TEMPLATE_LANGUAGE`, `WHATSAPP_ESCALATION_OPS_TEMPLATE_NAME` |
 | Lead dedup + rep reminder | `LEAD_DEDUP_WINDOW_HOURS`, `LEAD_FOLLOWUP_HOURS`, `WHATSAPP_REP_REMINDER_TEMPLATE_NAME`, `WHATSAPP_REP_REMINDER_TEMPLATE_LANGUAGE` |
+| Resolution check (customer + rep) | `LEAD_RESOLUTION_CHECK_HOURS`, `WHATSAPP_RESOLUTION_CHECK_TEMPLATE_NAME`, `WHATSAPP_RESOLUTION_CHECK_TEMPLATE_LANGUAGE`, `WHATSAPP_REP_RESOLUTION_CHECK_TEMPLATE_NAME`, `WHATSAPP_REP_RESOLUTION_CHECK_TEMPLATE_LANGUAGE` |
 | Dashboard | `DASHBOARD_ADMIN_USERNAME`, `DASHBOARD_ADMIN_PASSWORD`, `DASHBOARD_SESSION_SECRET` |
 
 ---

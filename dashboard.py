@@ -253,7 +253,7 @@ def export_excel(request: Request, start: str = "", end: str = ""):
         ws4.column_dimensions[col_letter].width = width
 
     ws5 = wb.create_sheet("Lead Details")
-    ws5.append(["Timestamp (UTC)", "Phone", "Company", "Sales Rep", "Customer Enquiry", "Priority", "Status", "Delivery", "Rep Response", "Response Confidence", "Resolved?", "Marked False Positive"])
+    ws5.append(["Timestamp (UTC)", "Phone", "Company", "Sales Rep", "Customer Enquiry", "Priority", "Status", "Delivery", "Rep Response", "Response Confidence", "Resolved? (Customer)", "Resolved? (Rep)", "Marked False Positive"])
     all_leads_list, _ = store.get_leads_list(start, end)  # page_size=None -> every lead
     _RESOLUTION_LABELS_XLSX = {"yes": "Resolved", "no": "Not resolved"}
     for row in all_leads_list:
@@ -263,9 +263,10 @@ def export_excel(request: Request, start: str = "", end: str = ""):
             (row.get("priority") or "").title(), row["status"], row["delivery_status"],
             row.get("rep_reply_text") or "", response_confidence,
             _RESOLUTION_LABELS_XLSX.get(row.get("resolution_check_response"), ""),
+            _RESOLUTION_LABELS_XLSX.get(row.get("rep_resolution_check_response"), ""),
             "Yes" if row.get("false_positive") else "No",
         ])
-    for col_letter, width in zip("ABCDEFGHIJKL", [26, 16, 24, 20, 60, 10, 10, 14, 40, 16, 14, 16]):
+    for col_letter, width in zip("ABCDEFGHIJKLM", [26, 16, 24, 20, 60, 10, 10, 14, 40, 16, 14, 14, 16]):
         ws5.column_dimensions[col_letter].width = width
 
     ws6 = wb.create_sheet("Rep Replies")
@@ -720,9 +721,10 @@ onsubmit="return confirm('Mark this as NOT a real lead? This helps train the Hea
             <td>{_rep_reply_cell(l.get('rep_reply_text'), l.get('rep_reply_at'), l.get('rep_reply_method'))}</td>
             <td>{_outcome_cell(l)}</td>
             <td>{_resolution_check_pill(l.get('resolution_check_response'))}</td>
+            <td>{_resolution_check_pill(l.get('rep_resolution_check_response'))}</td>
             <td>{_false_positive_action_cell(l)}</td>
         </tr>""" for l in leads_list
-    ) or "<tr><td colspan='11' class='muted'>No leads in this range</td></tr>"
+    ) or "<tr><td colspan='12' class='muted'>No leads in this range</td></tr>"
 
     _CONFIDENCE_LABELS = {"context_match": "Confirmed", "fallback_most_recent": "Best guess", "unresolved": "Unresolved"}
     rep_replies_rows = "".join(
@@ -1058,7 +1060,7 @@ request, or an urgent issue, and flagged for the assigned sales rep to follow up
   <div class="panel">
     <h2>Recent leads <span class="badge">{leads_list_total}</span></h2>
     <table>
-      <tr><th>When</th><th>Customer</th><th>Rep</th><th>Enquiry</th><th>Priority</th><th>Status</th><th>Delivery</th><th>Rep Response</th><th>Outcome</th><th>Resolved?</th><th>Action</th></tr>
+      <tr><th>When</th><th>Customer</th><th>Rep</th><th>Enquiry</th><th>Priority</th><th>Status</th><th>Delivery</th><th>Rep Response</th><th>Outcome</th><th>Resolved? (Customer)</th><th>Resolved? (Rep)</th><th>Action</th></tr>
       {leads_list_rows}
     </table>
     {leads_list_pagination_html}

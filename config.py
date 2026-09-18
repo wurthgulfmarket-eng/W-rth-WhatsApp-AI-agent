@@ -154,6 +154,15 @@ class Config:
     WHATSAPP_RESOLUTION_CHECK_TEMPLATE_NAME = os.getenv("WHATSAPP_RESOLUTION_CHECK_TEMPLATE_NAME", "")
     WHATSAPP_RESOLUTION_CHECK_TEMPLATE_LANGUAGE = os.getenv("WHATSAPP_RESOLUTION_CHECK_TEMPLATE_LANGUAGE", "en")
 
+    # Same "was it resolved?" check, but asked of the REP instead of the
+    # customer - a second, independent signal alongside the customer's own
+    # answer above (see the schema comment in storage/store.py). Sent on
+    # the same LEAD_RESOLUTION_CHECK_HOURS trigger, to its own template -
+    # until the template name is set, this safely no-ops, independent of
+    # whether the customer-side template is configured.
+    WHATSAPP_REP_RESOLUTION_CHECK_TEMPLATE_NAME = os.getenv("WHATSAPP_REP_RESOLUTION_CHECK_TEMPLATE_NAME", "")
+    WHATSAPP_REP_RESOLUTION_CHECK_TEMPLATE_LANGUAGE = os.getenv("WHATSAPP_REP_RESOLUTION_CHECK_TEMPLATE_LANGUAGE", "en")
+
     # Per-category USD rate for the dashboard's Meta API cost estimate.
     # Meta moved to per-message pricing (category-based) in mid-2025; the
     # actual rate depends on your specific WhatsApp BSP/reseller contract,
